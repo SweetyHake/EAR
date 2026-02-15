@@ -1,7 +1,7 @@
 {
   "id": "ear",
   "title": "Enhanced Audio Resources",
-  "version": "13.0.0",
+  "version": "13.1.1",
   "compatibility": {
     "minimum": "13",
     "verified": "13",
@@ -17,7 +17,7 @@
   ],
   "url": "https://github.com/SweetyHake/EAR",
   "manifest": "https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/module.json",
-  "download": "https://github.com/SweetyHake/EAR/releases/download/13.1.0/module.zip",
+  "download": "https://github.com/SweetyHake/EAR/releases/download/13.1.1/module.zip",
   "esmodules": [
     "scripts/music-player.mjs",
     "scripts/name-hiding.mjs"
@@ -27,5 +27,17 @@
       "src": "styles.css"
     }
   ],
-  "description": ""
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    },
+    {
+      "lang": "ru",
+      "name": "Русский",
+      "path": "lang/ru.json"
+    }
+  ],
+  "description": "Enhanced audio player UI for Foundry VTT playlists."
 }

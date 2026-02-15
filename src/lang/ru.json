@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Воспроизведение / Пауза",
+  "EAR.Stop": "Остановить",
+  "EAR.Previous": "Предыдущий",
+  "EAR.Next": "Следующий",
+  "EAR.ToggleRemaining": "Переключить оставшееся время",
+  "EAR.Loop": "Повтор",
+  "EAR.LoopOn": "Повтор: ВКЛ",
+  "EAR.LoopOff": "Повтор: ВЫКЛ",
+  "EAR.Mute": "Выключить / Включить звук",
+  "EAR.ModeDisabled": "Отключён",
+  "EAR.ModeSequential": "Последовательно",
+  "EAR.ModeShuffle": "Перемешать",
+  "EAR.ModeSimultaneous": "Одновременно"
+}

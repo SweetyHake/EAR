@@ -1,308 +1,301 @@
+:root {
+    --ear-accent: #c9593f;
+    --ear-accent-hover: #c9593f;
+    --ear-accent-error: #ce0707;
+    --ear-bg: rgba(11, 10, 19, 0.9);
+    --ear-bg-dark: rgba(11, 10, 19, 0.75);
+    --ear-text: #d6d4dc;
+    --ear-text-dim: #807e8b;
+    --ear-track-bg: #3a3944;
+    --ear-divider: #4a4955;
+    --ear-shadow: rgba(0, 0, 0, 0.35);
+    --ear-thumb: #e0dee6;
+}
+
 .ear-player {
     width: 100%;
-    margin-top: 6px;
-    padding: 10px 12px;
+    margin-top: 2px;
+    padding: 7px 8px 7px 16px;
+    background: var(--ear-bg);
     border-radius: 6px;
     display: flex;
     flex-direction: column;
     gap: 6px;
     position: relative;
-    background: color-mix(in srgb, var(--color-shadow-primary) 15%, transparent);
-    border: 1px solid var(--color-border-light-tertiary);
-    box-shadow: 0 0 6px var(--color-shadow-dark);
-    color: var(--color-text-light-primary);
+    box-shadow: 0 1px 4px var(--ear-shadow);
+    overflow: hidden;
 }
 
-.ear-player .ear-close-btn {
+.ear-player::before {
+    content: "";
     position: absolute;
-    top: 4px;
-    right: 6px;
+    top: 0;
+    bottom: 0;
+    left: -2px;
+    width: 8px;
+    background: var(--ear-accent);
+    border-radius: 90% 0 0 90%;
+}
+
+.ear-top-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+}
+
+.ear-play-btn {
     background: none;
     border: none;
-    color: var(--color-text-dark-inactive);
+    color: var(--ear-accent);
+    font-size: 14px;
     cursor: pointer;
-    font-size: 10px;
-    padding: 3px 5px;
-    border-radius: 4px;
-    transition: color 0.2s, background 0.2s;
-    z-index: 2;
-    line-height: 1;
+    padding: 0;
+    margin: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: filter 0.15s, transform 0.1s;
 }
 
-.ear-player .ear-close-btn:hover {
-    color: var(--color-level-error);
-    background: color-mix(in srgb, var(--color-level-error) 12%, transparent);
+.ear-play-btn:hover {
+    color: var(--ear-accent-hover);
+    transform: scale(1.1);
 }
 
-.ear-player .ear-track-name {
+.ear-play-btn:active {
+    transform: scale(0.92);
+}
+
+.ear-track-name {
+    flex: 1;
     font-size: 12px;
     font-weight: 600;
+    color: var(--ear-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-align: center;
-    padding: 0 20px;
-    color: var(--color-text-light-highlight);
-    letter-spacing: 0.2px;
+    line-height: 1.3;
 }
 
-.ear-player .ear-slider-row {
+.ear-volume-container {
     display: flex;
     align-items: center;
-    width: 100%;
-    gap: 8px;
-    padding: 0 4px;
-}
-
-.ear-player .ear-volume-icon {
-    font-size: 10px;
+    gap: 5px;
+    background: var(--ear-bg-dark);
+    padding: 2px 7px;
+    border-radius: 10px;
+    height: 22px;
     flex-shrink: 0;
-    cursor: pointer;
-    transition: color 0.2s;
-    width: 14px;
+}
+
+.ear-volume-icon {
+    font-size: 9px;
+    color: var(--ear-text-dim);
+    width: 12px;
     text-align: center;
-    color: var(--color-text-dark-inactive);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s;
 }
 
-.ear-player .ear-volume-icon:hover {
-    color: var(--color-warm-2);
+.ear-volume-icon:hover {
+    color: var(--ear-text);
 }
 
-.ear-player .ear-volume-slider {
-    flex: 1;
+.ear-volume-slider {
+    width: 48px;
     height: 3px;
     -webkit-appearance: none;
     appearance: none;
-    background: linear-gradient(to right, var(--color-warm-2) var(--ear-vol-pct, 50%), color-mix(in srgb, var(--color-text-light-primary) 12%, transparent) var(--ear-vol-pct, 50%));
-    border-radius: 2px;
     outline: none;
     cursor: pointer;
-    transition: height 0.15s;
+    border: none;
+    border-radius: 2px;
+    background: linear-gradient(
+        to right,
+        var(--ear-accent) var(--ear-vol-pct, 50%),
+        var(--ear-track-bg) var(--ear-vol-pct, 50%)
+    );
+    margin: 0;
+    padding: 0;
+    flex-shrink: 0;
 }
 
-.ear-player .ear-volume-slider:hover {
-    height: 4px;
-}
-
-.ear-player .ear-volume-slider::-webkit-slider-thumb {
+.ear-volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 10px;
     height: 10px;
-    background: var(--color-text-light-highlight);
-    border: 2px solid var(--color-warm-2);
+    background: var(--ear-thumb);
     border-radius: 50%;
+    border: none;
     cursor: pointer;
-    transition: box-shadow 0.2s, transform 0.15s;
-    box-shadow: 0 0 0 transparent;
+    box-shadow: 0 0 2px var(--ear-shadow);
 }
 
-.ear-player .ear-volume-slider::-webkit-slider-thumb:hover {
-    box-shadow: 0 0 6px color-mix(in srgb, var(--color-warm-2) 40%, transparent);
+.ear-volume-slider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    background: var(--ear-thumb);
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+}
+
+.ear-volume-slider::-moz-range-track {
+    height: 3px;
+    border: none;
+    background: transparent;
+}
+
+.ear-vol-text {
+    font-size: 9px;
+    font-family: monospace;
+    color: var(--ear-text-dim);
+    min-width: 24px;
+    text-align: right;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.ear-close-btn {
+    background: none;
+    border: none;
+    color: var(--ear-accent);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 3px;
+    margin: 0;
+    flex-shrink: 0;
+    transition: color 0.15s, transform 0.1s;
+    opacity: 0.7;
+}
+
+.ear-close-btn:hover {
+    color: var(--ear-accent-error);
+    opacity: 1;
     transform: scale(1.15);
 }
 
-.ear-player .ear-volume-slider::-moz-range-thumb {
-    width: 10px;
-    height: 10px;
-    background: var(--color-text-light-highlight);
-    border: 2px solid var(--color-warm-2);
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-.ear-player .ear-volume-slider::-moz-range-track {
-    height: 3px;
-    background: color-mix(in srgb, var(--color-text-light-primary) 12%, transparent);
-    border-radius: 2px;
-}
-
-.ear-player .ear-transport {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 0;
-}
-
-.ear-player .ear-transport-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 6px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 0.2s, background 0.2s, transform 0.1s;
-    flex-shrink: 0;
-    font-size: 14px;
-    min-width: 32px;
-    min-height: 32px;
-    color: var(--color-text-dark-inactive);
-}
-
-.ear-player .ear-transport-btn:hover {
-    color: var(--color-warm-2);
-    background: color-mix(in srgb, var(--color-warm-2) 10%, transparent);
-}
-
-.ear-player .ear-transport-btn:active {
+.ear-close-btn:active {
     transform: scale(0.9);
 }
 
-.ear-player .ear-transport-btn.ear-active {
-    color: var(--color-warm-2);
-}
-
-.ear-player .ear-transport-btn i {
-    display: block;
-}
-
-.ear-player .ear-play-btn {
-    width: 42px;
-    height: 42px;
-    background: var(--color-warm-2);
-    border: none;
-    border-radius: 50%;
-    color: var(--color-text-light-highlight);
-    cursor: pointer;
+.ear-bottom-row {
     display: flex;
     align-items: center;
-    justify-content: center;
-    transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
-    flex-shrink: 0;
-    font-size: 16px;
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--color-warm-2) 25%, transparent);
+    gap: 6px;
+    min-height: 16px;
 }
 
-.ear-player .ear-play-btn:hover {
-    background: var(--color-warm-1);
-    box-shadow: 0 3px 12px color-mix(in srgb, var(--color-warm-2) 35%, transparent);
-}
-
-.ear-player .ear-play-btn:active {
-    transform: scale(0.92);
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--color-warm-2) 20%, transparent);
-}
-
-.ear-player .ear-play-btn i {
-    display: block;
-}
-
-.ear-player .ear-volume-row {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    gap: 8px;
-    padding: 0 46px 0 24px;
-}
-
-.ear-player .ear-time-label {
-    font-size: 9px;
+.ear-time {
+    font-size: 10px;
     font-family: monospace;
-    min-width: 34px;
-    text-align: center;
+    color: var(--ear-text-dim);
+    min-width: 28px;
     user-select: none;
     flex-shrink: 0;
-    color: var(--color-text-dark-inactive);
-    letter-spacing: 0.3px;
+    line-height: 1;
 }
 
-.ear-player .ear-time-right {
-    font-size: 9px;
-    font-family: monospace;
-    min-width: 34px;
-    text-align: center;
-    user-select: none;
-    flex-shrink: 0;
+.ear-time.right {
+    text-align: right;
     cursor: pointer;
-    color: var(--color-text-dark-inactive);
-    letter-spacing: 0.3px;
-    border-bottom: 1px dashed transparent;
-    transition: color 0.2s, border-color 0.2s;
+    transition: color 0.15s;
 }
 
-.ear-player .ear-time-right:hover {
-    color: var(--color-warm-2);
-    border-bottom-color: var(--color-warm-2);
+.ear-time.right:hover {
+    color: var(--ear-text);
 }
 
-.ear-player .ear-seek-track {
+.ear-seek-track {
     flex: 1;
     height: 4px;
+    background: var(--ear-track-bg);
     border-radius: 2px;
     position: relative;
     cursor: pointer;
-    overflow: visible;
-    background: color-mix(in srgb, var(--color-text-light-primary) 12%, transparent);
-    transition: height 0.15s;
 }
 
-.ear-player .ear-seek-track:hover {
-    height: 6px;
-}
-
-.ear-player .ear-seek-fill {
+.ear-seek-fill {
     height: 100%;
-    background: var(--color-warm-2);
+    background: var(--ear-accent);
     border-radius: 2px;
-    pointer-events: none;
     position: absolute;
     top: 0;
     left: 0;
-    width: 0%;
-    transition: width 0.1s linear;
+    pointer-events: none;
 }
 
-.ear-player .ear-seek-handle {
+.ear-seek-handle {
     position: absolute;
     top: 50%;
-    width: 14px;
-    height: 14px;
-    background: var(--color-text-light-highlight);
-    border: 2px solid var(--color-warm-2);
+    width: 8px;
+    height: 8px;
+    background: var(--ear-accent);
     border-radius: 50%;
-    transform: translate(-50%, -50%) scale(0);
+    transform: translate(-50%, -50%);
     cursor: grab;
     z-index: 1;
-    transition: box-shadow 0.2s, transform 0.15s;
-    left: 0%;
-    box-shadow: 0 1px 4px var(--color-shadow-dark);
+    box-shadow: 0 0 3px var(--ear-shadow);
+    transition: transform 0.1s;
 }
 
-.ear-player .ear-seek-track:hover .ear-seek-handle,
-.ear-player .ear-seek-handle.ear-dragging {
-    transform: translate(-50%, -50%) scale(1);
+.ear-seek-track:hover .ear-seek-handle {
+    transform: translate(-50%, -50%) scale(1.25);
 }
 
-.ear-player .ear-seek-handle:hover {
-    box-shadow: 0 0 8px color-mix(in srgb, var(--color-warm-2) 50%, transparent);
-    transform: translate(-50%, -50%) scale(1.2);
-}
-
-.ear-player .ear-seek-handle:active,
-.ear-player .ear-seek-handle.ear-dragging {
+.ear-seek-handle:active,
+.ear-seek-handle.ear-dragging {
     cursor: grabbing;
-    transform: translate(-50%, -50%) scale(1.1);
+    transform: translate(-50%, -50%) scale(1.4);
+    transition: none;
 }
 
-.ear-vis-btn.sound-control {
-    flex: none;
-    font-size: 12px;
-    opacity: 0.6;
-    transition: opacity 0.2s, color 0.2s;
+.ear-controls-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 2px;
+    flex-shrink: 0;
 }
 
-.ear-vis-btn.sound-control:hover {
-    opacity: 1;
-    color: var(--color-warm-2);
+.ear-transport-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ear-text-dim);
+    font-size: 10px;
+    padding: 1px;
+    margin: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s;
+    flex-shrink: 0;
 }
 
-.ear-vis-btn.ear-vis-hidden {
-    opacity: 0.3;
+.ear-transport-btn:hover {
+    color: var(--ear-text);
 }
 
-.ear-vis-btn.ear-vis-hidden:hover {
-    opacity: 1;
-    color: var(--color-warm-2);
+.ear-transport-btn:active {
+    transform: scale(0.88);
+}
+
+.ear-transport-btn.ear-active {
+    color: var(--ear-accent);
+}
+
+.ear-divider {
+    width: 1px;
+    height: 10px;
+    background: var(--ear-divider);
+    margin: 0 3px;
+    flex-shrink: 0;
 }
