@@ -1,0 +1,31 @@
+{
+  "id": "ear",
+  "title": "Enhanced Audio Resources",
+  "version": "13.0.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13",
+    "maximum": "13"
+  },
+  "authors": [
+    {
+      "name": "SweetyHake",
+      "email": "sweetyhake@gmail.com",
+      "discord": "sweetyhake",
+      "flags": {}
+    }
+  ],
+  "url": "https://github.com/SweetyHake/EAR",
+  "manifest": "",
+  "download": "",
+  "esmodules": [
+    "scripts/music-player.mjs",
+    "scripts/name-hiding.mjs"
+  ],
+  "styles": [
+    {
+      "src": "styles.css"
+    }
+  ],
+  "description": ""
+}
