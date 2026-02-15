@@ -4,7 +4,7 @@ A Foundry VTT v13 module that replaces the default playlist sound controls with 
 
 ![Foundry VTT](https://img.shields.io/badge/Foundry%20VTT-v13-orange)
 
-<img width="409" height="224" alt="image" src="https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/screenshots/demo1.png" />
+<img width="420" height="150" alt="image" src="https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/screenshots/demo1.png" />
 
 ## Features
 ### 🎵 Player Interface
