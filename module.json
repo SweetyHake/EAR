@@ -16,8 +16,8 @@
     }
   ],
   "url": "https://github.com/SweetyHake/EAR",
-  "manifest": "",
-  "download": "",
+  "manifest": "https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/module.json",
+  "download": "https://github.com/SweetyHake/EAR/releases/download/13.1.0/module.zip",
   "esmodules": [
     "scripts/music-player.mjs",
     "scripts/name-hiding.mjs"
