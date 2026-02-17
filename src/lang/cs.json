@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Přehrát / Pozastavit",
+  "EAR.Stop": "Zastavit",
+  "EAR.Previous": "Předchozí",
+  "EAR.Next": "Další",
+  "EAR.ToggleRemaining": "Přepnout zbývající čas",
+  "EAR.Loop": "Opakování",
+  "EAR.LoopOn": "Opakování: ZAP",
+  "EAR.LoopOff": "Opakování: VYP",
+  "EAR.Mute": "Ztlumit / Zapnout zvuk",
+  "EAR.ModeDisabled": "Vypnuto",
+  "EAR.ModeSequential": "Sekvenční",
+  "EAR.ModeShuffle": "Náhodné",
+  "EAR.ModeSimultaneous": "Současné"
+}

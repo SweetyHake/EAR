@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Toista / Tauko",
+  "EAR.Stop": "Pysäytä",
+  "EAR.Previous": "Edellinen",
+  "EAR.Next": "Seuraava",
+  "EAR.ToggleRemaining": "Näytä jäljellä oleva aika",
+  "EAR.Loop": "Toisto",
+  "EAR.LoopOn": "Toisto: PÄÄLLÄ",
+  "EAR.LoopOff": "Toisto: POIS",
+  "EAR.Mute": "Mykistä / Poista mykistys",
+  "EAR.ModeDisabled": "Pois käytöstä",
+  "EAR.ModeSequential": "Peräkkäin",
+  "EAR.ModeShuffle": "Sekoitus",
+  "EAR.ModeSimultaneous": "Samanaikainen"
+}

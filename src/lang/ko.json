@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "재생 / 일시정지",
+  "EAR.Stop": "정지",
+  "EAR.Previous": "이전",
+  "EAR.Next": "다음",
+  "EAR.ToggleRemaining": "남은 시간 전환",
+  "EAR.Loop": "반복",
+  "EAR.LoopOn": "반복: 켜짐",
+  "EAR.LoopOff": "반복: 꺼짐",
+  "EAR.Mute": "음소거 / 음소거 해제",
+  "EAR.ModeDisabled": "비활성화",
+  "EAR.ModeSequential": "순차 재생",
+  "EAR.ModeShuffle": "셔플",
+  "EAR.ModeSimultaneous": "동시 재생"
+}

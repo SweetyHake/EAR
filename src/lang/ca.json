@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Reproduir / Pausa",
+  "EAR.Stop": "Aturar",
+  "EAR.Previous": "Anterior",
+  "EAR.Next": "Següent",
+  "EAR.ToggleRemaining": "Alternar temps restant",
+  "EAR.Loop": "Repetir",
+  "EAR.LoopOn": "Repetir: ON",
+  "EAR.LoopOff": "Repetir: OFF",
+  "EAR.Mute": "Silenciar / Activar so",
+  "EAR.ModeDisabled": "Desactivat",
+  "EAR.ModeSequential": "Seqüencial",
+  "EAR.ModeShuffle": "Aleatori",
+  "EAR.ModeSimultaneous": "Simultani"
+}

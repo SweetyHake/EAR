@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Odtwórz / Pauza",
+  "EAR.Stop": "Zatrzymaj",
+  "EAR.Previous": "Poprzedni",
+  "EAR.Next": "Następny",
+  "EAR.ToggleRemaining": "Przełącz pozostały czas",
+  "EAR.Loop": "Powtarzanie",
+  "EAR.LoopOn": "Powtarzanie: WŁ",
+  "EAR.LoopOff": "Powtarzanie: WYŁ",
+  "EAR.Mute": "Wycisz / Włącz dźwięk",
+  "EAR.ModeDisabled": "Wyłączony",
+  "EAR.ModeSequential": "Sekwencyjnie",
+  "EAR.ModeShuffle": "Losowo",
+  "EAR.ModeSimultaneous": "Jednocześnie"
+}

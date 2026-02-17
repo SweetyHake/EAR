@@ -7,6 +7,7 @@ const playHistory = [];
 const path = "#playlists .currently-playing .playlist-sounds .sound";
 let showRemaining = false;
 let handleDirectoryTimer = null;
+
 let interactionLock = false;
 let seekingIds = new Set();
 
@@ -354,6 +355,8 @@ const handleDirectory = async (directory) => {
 
         const player = document.createElement("div");
         player.classList.add("ear-player");
+        player.dataset.earSoundId = soundId;
+        player.dataset.earPlaylistId = plId;
 
         const topRow = document.createElement("div");
         topRow.classList.add("ear-top-row");
@@ -407,6 +410,13 @@ const handleDirectory = async (directory) => {
         let volThrottleTimer = null;
         let volDragging = false;
 
+        const applyVolVisual = (v) => {
+            volSlider.value = v;
+            updateVolumeSliderFill(volSlider, v);
+            volIcon.className = getVolumeIcon(v) + " ear-volume-icon";
+            volText.textContent = Math.round(v * 100) + "%";
+        };
+
         stopEvent(volContainer);
         stopEvent(volSlider);
         volSlider.addEventListener("click", e => e.stopPropagation());
@@ -445,17 +455,11 @@ const handleDirectory = async (directory) => {
             if (ps.volume > 0) {
                 savedVol = ps.volume;
                 await safeUpdate(ps, { volume: 0 });
-                volSlider.value = 0;
-                updateVolumeSliderFill(volSlider, 0);
-                volIcon.className = getVolumeIcon(0) + " ear-volume-icon";
-                volText.textContent = "0%";
+                applyVolVisual(0);
                 applyLocalVolume(ps, 0);
             } else {
                 await safeUpdate(ps, { volume: savedVol });
-                volSlider.value = savedVol;
-                updateVolumeSliderFill(volSlider, savedVol);
-                volIcon.className = getVolumeIcon(savedVol) + " ear-volume-icon";
-                volText.textContent = Math.round(savedVol * 100) + "%";
+                applyVolVisual(savedVol);
                 applyLocalVolume(ps, savedVol);
             }
         });
@@ -644,8 +648,8 @@ const handleDirectory = async (directory) => {
             updating = false;
         };
 
-        document.addEventListener("pointermove", onMove);
-        document.addEventListener("pointerup", onUp);
+        document.addEventListener("pointermove", onMove, true);
+        document.addEventListener("pointerup", onUp, true);
         seekTrack.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
         seekTrack.addEventListener("dblclick", e => { e.stopPropagation(); e.preventDefault(); });
         seekHandle.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
@@ -662,13 +666,10 @@ const handleDirectory = async (directory) => {
                     setTooltip(trackName, dn);
                 }
 
-                if (!volDragging && !interactionLock) {
+                if (!volDragging && !interactionLock && !wheelActive)  {
                     const cv = ps.volume;
                     if (Math.abs(parseFloat(volSlider.value) - cv) > 0.009) {
-                        volSlider.value = cv;
-                        updateVolumeSliderFill(volSlider, cv);
-                        volIcon.className = getVolumeIcon(cv) + " ear-volume-icon";
-                        volText.textContent = Math.round(cv * 100) + "%";
+                        applyVolVisual(cv);
                     }
                 }
 
@@ -713,8 +714,8 @@ const handleDirectory = async (directory) => {
             playlistId: plId,
             trackNameEl: trackName,
             cleanup: () => {
-                document.removeEventListener("pointermove", onMove);
-                document.removeEventListener("pointerup", onUp);
+                document.removeEventListener("pointermove", onMove, true);
+                document.removeEventListener("pointerup", onUp, true);
                 if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
                 if (volThrottleTimer) { clearTimeout(volThrottleTimer); volThrottleTimer = null; }
             }
@@ -747,3 +748,51 @@ Hooks.on("updatePlaylist", () => {
 Hooks.on("preUpdatePlaylistSound", (doc, changes) => {
     if (changes.pausedTime === 0) changes.pausedTime = 0.001;
 });
+
+let globalWheelThrottle = null;
+let wheelActive = false;
+
+document.addEventListener("wheel", (e) => {
+    const earPlayer = e.target.closest(".ear-player");
+    if (!earPlayer) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    const soundId = earPlayer.dataset.earSoundId;
+    const playlistId = earPlayer.dataset.earPlaylistId;
+    if (!soundId || !playlistId) return;
+
+    const pl = game.playlists.get(playlistId);
+    if (!pl) return;
+    const ps = pl.sounds.get(soundId);
+    if (!ps) return;
+
+    const slider = earPlayer.querySelector(".ear-volume-slider");
+    if (!slider) return;
+
+    wheelActive = true;
+    const current = parseFloat(slider.value);
+    const sign = e.deltaY < 0 ? 1 : -1;
+    const nv = Math.max(0, Math.min(1, +(current + sign * 0.01).toFixed(3)));
+
+    slider.value = nv;
+    updateVolumeSliderFill(slider, nv);
+    const icon = earPlayer.querySelector(".ear-volume-icon");
+    if (icon) icon.className = getVolumeIcon(nv) + " ear-volume-icon";
+    const text = earPlayer.querySelector(".ear-vol-text");
+    if (text) text.textContent = Math.round(nv * 100) + "%";
+    applyLocalVolume(ps, nv);
+
+    if (globalWheelThrottle) clearTimeout(globalWheelThrottle);
+    globalWheelThrottle = setTimeout(async () => {
+        globalWheelThrottle = null;
+        const saveVol = parseFloat(slider.value);
+        interactionLock = true;
+        await safeUpdate(ps, { volume: saveVol });
+        setTimeout(() => {
+            interactionLock = false;
+            wheelActive = false;
+        }, 150);
+    }, 600);
+}, { passive: false, capture: true });

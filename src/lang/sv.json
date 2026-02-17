@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "Spela / Paus",
+  "EAR.Stop": "Stoppa",
+  "EAR.Previous": "Föregående",
+  "EAR.Next": "Nästa",
+  "EAR.ToggleRemaining": "Visa återstående tid",
+  "EAR.Loop": "Upprepa",
+  "EAR.LoopOn": "Upprepa: PÅ",
+  "EAR.LoopOff": "Upprepa: AV",
+  "EAR.Mute": "Ljud av / Ljud på",
+  "EAR.ModeDisabled": "Inaktiverad",
+  "EAR.ModeSequential": "Sekventiell",
+  "EAR.ModeShuffle": "Blanda",
+  "EAR.ModeSimultaneous": "Samtidig"
+}

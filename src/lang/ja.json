@@ -1,0 +1,15 @@
+{
+  "EAR.PlayPause": "再生 / 一時停止",
+  "EAR.Stop": "停止",
+  "EAR.Previous": "前へ",
+  "EAR.Next": "次へ",
+  "EAR.ToggleRemaining": "残り時間の表示切替",
+  "EAR.Loop": "ループ",
+  "EAR.LoopOn": "ループ: オン",
+  "EAR.LoopOff": "ループ: オフ",
+  "EAR.Mute": "ミュート / ミュート解除",
+  "EAR.ModeDisabled": "無効",
+  "EAR.ModeSequential": "順次再生",
+  "EAR.ModeShuffle": "シャッフル",
+  "EAR.ModeSimultaneous": "同時再生"
+}
