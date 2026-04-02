@@ -20,7 +20,7 @@
     border-radius: 6px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
     position: relative;
     box-shadow: 0 1px 4px var(--ear-shadow);
     overflow: hidden;
@@ -40,7 +40,7 @@
 .ear-top-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 3px;
     min-height: 22px;
 }
 
@@ -85,7 +85,7 @@
 .ear-volume-container {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 3px;
     background: var(--ear-bg-dark);
     padding: 2px 7px;
     border-radius: 10px;
@@ -96,7 +96,7 @@
 .ear-volume-icon {
     font-size: 9px;
     color: var(--ear-text-dim);
-    width: 12px;
+    width: 16px;
     text-align: center;
     cursor: pointer;
     flex-shrink: 0;
@@ -108,9 +108,9 @@
 }
 
 .ear-volume-slider {
-    width: 48px;
-    max-width: 48px; /* <--- */
-    flex-grow: 0; /* <--- */
+    width: 50px;
+    max-width: 50px;
+    flex-grow: 0;
     height: 3px;
     -webkit-appearance: none;
     appearance: none;
@@ -190,7 +190,7 @@
 .ear-bottom-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 0px;
     min-height: 16px;
 }
 
@@ -261,7 +261,7 @@
 .ear-controls-group {
     display: flex;
     align-items: center;
-    gap: 3px;
+    gap: 0px;
     margin-left: 2px;
     flex-shrink: 0;
 }
@@ -302,3 +302,11 @@
     margin: 0 3px;
     flex-shrink: 0;
 }
+
+
+
+
+
+
+
+

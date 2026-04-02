@@ -87,9 +87,12 @@ function startObserver() {
     if (!target || target.dataset.earNameObserver) return;
     target.dataset.earNameObserver = "1";
 
+    let debounceTimer = null;
     const observer = new MutationObserver((mutations) => {
         let shouldRun = false;
         for (const m of mutations) {
+            const t = m.target;
+            if (t && t.closest && t.closest(".ear-player")) continue;
             if (m.type === "childList" && m.addedNodes.length > 0) {
                 shouldRun = true;
                 break;
@@ -100,7 +103,11 @@ function startObserver() {
             }
         }
         if (shouldRun) {
-            hideNamesForPlayers();
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                debounceTimer = null;
+                hideNamesForPlayers();
+            }, 100);
         }
     });
 

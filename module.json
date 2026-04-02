@@ -1,7 +1,7 @@
 {
   "id": "ear",
   "title": "Enhanced Audio Resources",
-  "version": "13.1.3",
+  "version": "13.1.4",
   "compatibility": {
     "minimum": "13",
     "verified": "13",
@@ -29,21 +29,7 @@
   ],
   "languages": [
     { "lang": "en",      "name": "English",    "path": "lang/en.json" },
-    { "lang": "ru",      "name": "Русский",    "path": "lang/ru.json" },
-    { "lang": "de",      "name": "Deutsch",    "path": "lang/de.json" },
-    { "lang": "fr",      "name": "Français",   "path": "lang/fr.json" },
-    { "lang": "es",      "name": "Español",    "path": "lang/es.json" },
-    { "lang": "pt-BR",   "name": "Português (Brasil)", "path": "lang/pt-BR.json" },
-    { "lang": "ja",      "name": "日本語",      "path": "lang/ja.json" },
-    { "lang": "ko",      "name": "한국어",       "path": "lang/ko.json" },
-    { "lang": "zh-Hans", "name": "简体中文",     "path": "lang/zh-Hans.json" },
-    { "lang": "zh-Hant", "name": "繁體中文",     "path": "lang/zh-Hant.json" },
-    { "lang": "it",      "name": "Italiano",   "path": "lang/it.json" },
-    { "lang": "pl",      "name": "Polski",     "path": "lang/pl.json" },
-    { "lang": "cs",      "name": "Čeština",    "path": "lang/cs.json" },
-    { "lang": "fi",      "name": "Suomi",      "path": "lang/fi.json" },
-    { "lang": "sv",      "name": "Svenska",    "path": "lang/sv.json" },
-    { "lang": "ca",      "name": "Català",     "path": "lang/ca.json" }
+    { "lang": "ru",      "name": "Русский",    "path": "lang/ru.json" }
   ],
   "description": "Enhanced audio player UI for Foundry VTT playlists."
 }
