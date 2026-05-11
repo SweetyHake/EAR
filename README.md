@@ -2,7 +2,7 @@
 
 A Foundry VTT v13 module that replaces default playlist controls with a compact, modern audio player — right in the sidebar.
 
-![Foundry VTT](https://img.shields.io/badge/Foundry%20VTT-v13-orange)
+![Foundry VTT](https://img.shields.io/badge/Foundry%20VTT-v13-orange) ![Foundry VTT](https://img.shields.io/badge/Foundry%20VTT-v14-orange)
 
 <img width="420" height="150" alt="EAR Demo" src="https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/screenshots/demo1.png" />
 
