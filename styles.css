@@ -303,6 +303,27 @@
     flex-shrink: 0;
 }
 
+/* Read-only player (non-GM players): show only volume + progress + time. */
+.ear-player.ear-readonly {
+    padding-left: 14px;
+}
+
+.ear-player.ear-readonly .ear-track-name {
+    margin-left: 2px;
+}
+
+.ear-player.ear-readonly .ear-seek-track {
+    cursor: default;
+}
+
+.ear-player.ear-readonly .ear-seek-track:hover .ear-seek-handle {
+    transform: translate(-50%, -50%);
+}
+
+.ear-player.ear-readonly .ear-time.right {
+    cursor: pointer;
+}
+
 
 
 

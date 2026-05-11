@@ -1,4 +1,6 @@
 const id = "enhanced-audio-resources";
+const MODULE_ID = "ear";
+const SETTING_LOCAL_VOLUME = "localVolume";
 const log = (arg) => console.info(id, arg);
 log("Initialized");
 
@@ -11,6 +13,68 @@ let handleDirectoryTimer = null;
 let interactionLock = false;
 let interactionLockTimer = null;
 let seekingIds = new Set();
+
+// Local (per-client) volume, persisted in client settings and shared across all tracks.
+let localVolume = 1;
+let savedLocalVolume = 1; // remembers last non-zero for mute toggle
+
+function getLocalVolume() {
+    try {
+        const v = game.settings.get(MODULE_ID, SETTING_LOCAL_VOLUME);
+        if (Number.isFinite(v)) return Math.max(0, Math.min(1, v));
+    } catch (e) {}
+    return 1;
+}
+
+async function setLocalVolume(v) {
+    v = Math.max(0, Math.min(1, Number(v) || 0));
+    localVolume = v;
+    if (v > 0) savedLocalVolume = v;
+    try {
+        await game.settings.set(MODULE_ID, SETTING_LOCAL_VOLUME, v);
+    } catch (e) {
+        log("Settings save error: " + e.message);
+    }
+    applyLocalVolumeToAll();
+}
+
+function applyLocalVolumeToAll() {
+    try {
+        const sounds = [];
+        for (const pl of game.playlists?.contents ?? []) {
+            for (const ps of pl.sounds) {
+                if (ps.playing || ps.sound) sounds.push(ps);
+            }
+        }
+        for (const ps of sounds) applyLocalVolume(ps, localVolume);
+    } catch (e) {}
+}
+
+Hooks.once("init", () => {
+    game.settings.register(MODULE_ID, SETTING_LOCAL_VOLUME, {
+        name: "EAR.LocalVolume",
+        scope: "client",
+        config: false,
+        type: Number,
+        default: 1,
+        onChange: (v) => {
+            const nv = Math.max(0, Math.min(1, Number(v) || 0));
+            localVolume = nv;
+            if (nv > 0) savedLocalVolume = nv;
+            applyLocalVolumeToAll();
+            // Refresh UI sliders
+            for (const sId of Object.keys(controls)) {
+                const ctrl = controls[sId];
+                if (ctrl && ctrl.syncVolumeUI) ctrl.syncVolumeUI(nv);
+            }
+        }
+    });
+});
+
+Hooks.once("ready", () => {
+    localVolume = getLocalVolume();
+    if (localVolume > 0) savedLocalVolume = localVolume;
+});
 
 const PlaylistDir = foundry.applications.sidebar.tabs.PlaylistDirectory;
 
@@ -307,7 +371,8 @@ PlaylistDir.prototype.render = function(...args) {
 const handleDirectory = async (directory) => {
     if (interactionLock) return;
     if (!(directory instanceof PlaylistDir)) return;
-    if (!canControl()) return;
+
+    const hasControl = canControl();
 
     const soundElements = Array.from(document.querySelectorAll(activePath))
         .filter(el => el.dataset.playlistId && el.dataset.soundId);
@@ -375,60 +440,67 @@ const handleDirectory = async (directory) => {
 
         const player = document.createElement("div");
         player.classList.add("ear-player");
+        if (!hasControl) player.classList.add("ear-readonly");
         player.dataset.earSoundId = soundId;
         player.dataset.earPlaylistId = plId;
 
         const topRow = document.createElement("div");
         topRow.classList.add("ear-top-row");
 
-        const playBtn = document.createElement("button");
-        playBtn.classList.add("ear-play-btn");
-        const playIcon = document.createElement("i");
-        playIcon.className = ps.playing ? "fa-solid fa-pause" : "fa-solid fa-play";
-        playBtn.appendChild(playIcon);
-        setTooltip(playBtn, loc("EAR.PlayPause"));
-        stopEvent(playBtn);
-        playBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            if (ps.playing) {
-                const ct = getCurrentTime(ps);
-                await safeUpdate(ps, { pausedTime: ct || 0.001, playing: false });
-            } else {
-                if (e.shiftKey && pl) {
-                    const prevMode = pl.mode;
-                    if (prevMode !== 2) await safeUpdate(pl, { mode: 2 });
+        let playBtn = null;
+        let playIcon = null;
+        if (hasControl) {
+            playBtn = document.createElement("button");
+            playBtn.classList.add("ear-play-btn");
+            playIcon = document.createElement("i");
+            playIcon.className = ps.playing ? "fa-solid fa-pause" : "fa-solid fa-play";
+            playBtn.appendChild(playIcon);
+            setTooltip(playBtn, loc("EAR.PlayPause"));
+            stopEvent(playBtn);
+            playBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                if (ps.playing) {
+                    const ct = getCurrentTime(ps);
+                    await safeUpdate(ps, { pausedTime: ct || 0.001, playing: false });
+                } else {
+                    if (e.shiftKey && pl) {
+                        const prevMode = pl.mode;
+                        if (prevMode !== 2) await safeUpdate(pl, { mode: 2 });
+                        await safeUpdate(ps, { playing: true });
+                        try { ps.synchronize(); } catch(err) {}
+                        if (prevMode !== 2) setTimeout(async () => { await safeUpdate(pl, { mode: prevMode }); }, 500);
+                        return;
+                    }
                     await safeUpdate(ps, { playing: true });
-                    try { ps.synchronize(); } catch(err) {}
-                    if (prevMode !== 2) setTimeout(async () => { await safeUpdate(pl, { mode: prevMode }); }, 500);
-                    return;
                 }
-                await safeUpdate(ps, { playing: true });
-            }
-            try { ps.synchronize(); } catch(err) {}
-        });
+                try { ps.synchronize(); } catch(err) {}
+            });
+        }
 
         const trackName = document.createElement("div");
         trackName.classList.add("ear-track-name");
         trackName.textContent = displayName;
         setTooltip(trackName, displayName);
 
+        // Ensure the current audio volume reflects the local setting immediately.
+        applyLocalVolume(ps, localVolume);
+
         const volContainer = document.createElement("div");
         volContainer.classList.add("ear-volume-container");
 
         const volIcon = document.createElement("i");
-        volIcon.className = getVolumeIcon(ps.volume) + " ear-volume-icon";
+        volIcon.className = getVolumeIcon(localVolume) + " ear-volume-icon";
 
         const volText = document.createElement("span");
         volText.classList.add("ear-vol-text");
-        volText.textContent = Math.round(ps.volume * 100) + "%";
+        volText.textContent = Math.round(localVolume * 100) + "%";
 
         const volSlider = document.createElement("input");
         volSlider.type = "range"; volSlider.min = 0; volSlider.max = 1; volSlider.step = 0.005;
-        volSlider.value = ps.volume;
+        volSlider.value = localVolume;
         volSlider.classList.add("ear-volume-slider");
-        updateVolumeSliderFill(volSlider, ps.volume);
+        updateVolumeSliderFill(volSlider, localVolume);
 
-        let savedVol = ps.volume || 1;
         let volThrottleTimer = null;
         let volDragging = false;
 
@@ -460,8 +532,7 @@ const handleDirectory = async (directory) => {
                 volThrottleTimer = null;
             }
             const v = parseFloat(volSlider.value);
-            await safeUpdate(ps, { volume: v });
-            if (v > 0) savedVol = v;
+            await setLocalVolume(v);
             setTimeout(() => { setInteractionLock(false); }, 100);
         };
 
@@ -476,47 +547,53 @@ const handleDirectory = async (directory) => {
         setTooltip(volIcon, loc("EAR.Mute"));
         volIcon.addEventListener("click", async e => {
             e.stopPropagation(); e.preventDefault();
-            if (ps.volume > 0) {
-                savedVol = ps.volume;
-                await safeUpdate(ps, { volume: 0 });
-                applyVolVisual(0);
-                applyLocalVolume(ps, 0);
+            if (localVolume > 0) {
+                await setLocalVolume(0);
             } else {
-                await safeUpdate(ps, { volume: savedVol });
-                applyVolVisual(savedVol);
-                applyLocalVolume(ps, savedVol);
+                await setLocalVolume(savedLocalVolume || 1);
             }
         });
 
         volSlider.addEventListener("input", e => {
             e.stopPropagation();
             const v = parseFloat(volSlider.value);
+            localVolume = v;
+            if (v > 0) savedLocalVolume = v;
             updateVolumeSliderFill(volSlider, v);
             volIcon.className = getVolumeIcon(v) + " ear-volume-icon";
             volText.textContent = Math.round(v * 100) + "%";
-            applyLocalVolume(ps, v);
+            applyLocalVolumeToAll();
+            // Mirror the change to every other visible EAR player.
+            for (const sId of Object.keys(controls)) {
+                if (sId === soundId) continue;
+                const ctrl = controls[sId];
+                if (ctrl && ctrl.syncVolumeUI) ctrl.syncVolumeUI(v);
+            }
         });
 
         volContainer.appendChild(volIcon);
         volContainer.appendChild(volSlider);
         volContainer.appendChild(volText);
 
-        const closeBtn = document.createElement("button");
-        closeBtn.classList.add("ear-close-btn");
-        closeBtn.innerHTML = `<i class="fa-solid fa-xmark"></i>`;
-        setTooltip(closeBtn, loc("EAR.Stop"));
-        stopEvent(closeBtn);
-        closeBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            await safeUpdate(ps, { playing: false, pausedTime: null });
-            try { ps.synchronize(); } catch(err) {}
-            resetControl(soundId);
-        });
+        let closeBtn = null;
+        if (hasControl) {
+            closeBtn = document.createElement("button");
+            closeBtn.classList.add("ear-close-btn");
+            closeBtn.innerHTML = `<i class="fa-solid fa-xmark"></i>`;
+            setTooltip(closeBtn, loc("EAR.Stop"));
+            stopEvent(closeBtn);
+            closeBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                await safeUpdate(ps, { playing: false, pausedTime: null });
+                try { ps.synchronize(); } catch(err) {}
+                resetControl(soundId);
+            });
+        }
 
-        topRow.appendChild(playBtn);
+        if (playBtn) topRow.appendChild(playBtn);
         topRow.appendChild(trackName);
         topRow.appendChild(volContainer);
-        topRow.appendChild(closeBtn);
+        if (closeBtn) topRow.appendChild(closeBtn);
 
         const bottomRow = document.createElement("div");
         bottomRow.classList.add("ear-bottom-row");
@@ -551,80 +628,85 @@ const handleDirectory = async (directory) => {
         const controlsGroup = document.createElement("div");
         controlsGroup.classList.add("ear-controls-group");
 
-        const prevBtn = document.createElement("button");
-        prevBtn.classList.add("ear-transport-btn");
-        prevBtn.innerHTML = `<i class="fa-solid fa-backward-step"></i>`;
-        setTooltip(prevBtn, loc("EAR.Previous"));
-        stopEvent(prevBtn);
-        prevBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            const ct = getCurrentTime(ps);
-            if (ct >= 3) {
-                await seekSound(ps, 0.001, soundId);
-            } else {
-                if (pl && pl.mode !== 2 && pl.mode !== -1) {
-                    await playPrevInPlaylist(pl, soundId);
-                } else {
+        let prevBtn = null, nextBtn = null, repeatBtn = null, modeBtn = null;
+        let repeatIcon = null, modeIcon = null;
+
+        if (hasControl) {
+            prevBtn = document.createElement("button");
+            prevBtn.classList.add("ear-transport-btn");
+            prevBtn.innerHTML = `<i class="fa-solid fa-backward-step"></i>`;
+            setTooltip(prevBtn, loc("EAR.Previous"));
+            stopEvent(prevBtn);
+            prevBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                const ct = getCurrentTime(ps);
+                if (ct >= 3) {
                     await seekSound(ps, 0.001, soundId);
+                } else {
+                    if (pl && pl.mode !== 2 && pl.mode !== -1) {
+                        await playPrevInPlaylist(pl, soundId);
+                    } else {
+                        await seekSound(ps, 0.001, soundId);
+                    }
                 }
-            }
-        });
+            });
 
-        const nextBtn = document.createElement("button");
-        nextBtn.classList.add("ear-transport-btn");
-        nextBtn.innerHTML = `<i class="fa-solid fa-forward-step"></i>`;
-        setTooltip(nextBtn, loc("EAR.Next"));
-        stopEvent(nextBtn);
-        nextBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            if (!pl || pl.mode === -1 || pl.mode === 2) {
-                await seekSound(ps, 0.001, soundId);
-                return;
-            }
-            await playNextInPlaylist(pl, soundId);
-        });
+            nextBtn = document.createElement("button");
+            nextBtn.classList.add("ear-transport-btn");
+            nextBtn.innerHTML = `<i class="fa-solid fa-forward-step"></i>`;
+            setTooltip(nextBtn, loc("EAR.Next"));
+            stopEvent(nextBtn);
+            nextBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                if (!pl || pl.mode === -1 || pl.mode === 2) {
+                    await seekSound(ps, 0.001, soundId);
+                    return;
+                }
+                await playNextInPlaylist(pl, soundId);
+            });
 
-        const divider = document.createElement("div");
-        divider.classList.add("ear-divider");
+            const divider = document.createElement("div");
+            divider.classList.add("ear-divider");
 
-        const repeatBtn = document.createElement("button");
-        repeatBtn.classList.add("ear-transport-btn");
-        const repeatIcon = document.createElement("i");
-        repeatIcon.className = "fa-solid fa-repeat";
-        repeatBtn.appendChild(repeatIcon);
-        setTooltip(repeatBtn, ps.repeat ? loc("EAR.LoopOn") : loc("EAR.LoopOff"));
-        if (ps.repeat) repeatBtn.classList.add("ear-active");
-        stopEvent(repeatBtn);
-        repeatBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            await safeUpdate(ps, { repeat: !ps.repeat });
-        });
+            repeatBtn = document.createElement("button");
+            repeatBtn.classList.add("ear-transport-btn");
+            repeatIcon = document.createElement("i");
+            repeatIcon.className = "fa-solid fa-repeat";
+            repeatBtn.appendChild(repeatIcon);
+            setTooltip(repeatBtn, ps.repeat ? loc("EAR.LoopOn") : loc("EAR.LoopOff"));
+            if (ps.repeat) repeatBtn.classList.add("ear-active");
+            stopEvent(repeatBtn);
+            repeatBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                await safeUpdate(ps, { repeat: !ps.repeat });
+            });
 
-        const modeData = getModeData(pl ? pl.mode : 0);
-        const modeBtn = document.createElement("button");
-        modeBtn.classList.add("ear-transport-btn");
-        const modeIcon = document.createElement("i");
-        modeIcon.className = modeData.icon;
-        modeBtn.appendChild(modeIcon);
-        setTooltip(modeBtn, getModeLabel(pl ? pl.mode : 0));
-        stopEvent(modeBtn);
-        modeBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            if (!pl) return;
-            const nx = getNextMode(pl.mode);
-            await safeUpdate(pl, { mode: nx });
-        });
+            const modeData = getModeData(pl ? pl.mode : 0);
+            modeBtn = document.createElement("button");
+            modeBtn.classList.add("ear-transport-btn");
+            modeIcon = document.createElement("i");
+            modeIcon.className = modeData.icon;
+            modeBtn.appendChild(modeIcon);
+            setTooltip(modeBtn, getModeLabel(pl ? pl.mode : 0));
+            stopEvent(modeBtn);
+            modeBtn.addEventListener("click", async e => {
+                e.stopPropagation(); e.preventDefault();
+                if (!pl) return;
+                const nx = getNextMode(pl.mode);
+                await safeUpdate(pl, { mode: nx });
+            });
 
-        controlsGroup.appendChild(prevBtn);
-        controlsGroup.appendChild(nextBtn);
-        controlsGroup.appendChild(divider);
-        controlsGroup.appendChild(repeatBtn);
-        controlsGroup.appendChild(modeBtn);
+            controlsGroup.appendChild(prevBtn);
+            controlsGroup.appendChild(nextBtn);
+            controlsGroup.appendChild(divider);
+            controlsGroup.appendChild(repeatBtn);
+            controlsGroup.appendChild(modeBtn);
+        }
 
         bottomRow.appendChild(curTimeLabel);
         bottomRow.appendChild(seekTrack);
         bottomRow.appendChild(totalTimeLabel);
-        bottomRow.appendChild(controlsGroup);
+        if (hasControl) bottomRow.appendChild(controlsGroup);
 
         player.appendChild(topRow);
         player.appendChild(bottomRow);
@@ -678,12 +760,18 @@ const handleDirectory = async (directory) => {
             updateVis(getProgress(e));
         };
 
-        seekTrack.addEventListener("pointerdown", startDrag);
-        seekHandle.addEventListener("pointerdown", startDrag);
-
         seekTrack.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
         seekTrack.addEventListener("dblclick", e => { e.stopPropagation(); e.preventDefault(); });
-        seekHandle.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
+
+        if (hasControl) {
+            seekTrack.addEventListener("pointerdown", startDrag);
+            seekHandle.addEventListener("pointerdown", startDrag);
+            seekHandle.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); });
+        } else {
+            // Read-only seek bar for non-GMs: hide the drag handle entirely.
+            seekHandle.style.display = "none";
+            seekTrack.style.cursor = "default";
+        }
 
         let updateTimer = null;
         const liveUpdate = () => {
@@ -693,7 +781,7 @@ const handleDirectory = async (directory) => {
                 const isPlaying = ps.playing;
                 if (cachedPlayState !== isPlaying) {
                     cachedPlayState = isPlaying;
-                    playIcon.className = isPlaying ? "fa-solid fa-pause" : "fa-solid fa-play";
+                    if (playIcon) playIcon.className = isPlaying ? "fa-solid fa-pause" : "fa-solid fa-play";
                 }
 
                 const dn = getDisplayName(ps);
@@ -702,10 +790,13 @@ const handleDirectory = async (directory) => {
                     setTooltip(trackName, dn);
                 }
 
+                // Keep audio aligned with the local volume (covers cases where
+                // Foundry resets gainNode when a track starts/resumes).
+                applyLocalVolume(ps, localVolume);
+
                 if (!volDragging && !interactionLock && !wheelActive) {
-                    const cv = ps.volume;
-                    if (Math.abs(parseFloat(volSlider.value) - cv) > 0.009) {
-                        applyVolVisual(cv);
+                    if (Math.abs(parseFloat(volSlider.value) - localVolume) > 0.009) {
+                        applyVolVisual(localVolume);
                     }
                 }
 
@@ -741,9 +832,8 @@ const handleDirectory = async (directory) => {
                                         node.context.resume().catch(() => {});
                                     }
                                     if (sound.gainNode) {
-                                        const expectedVol = ps.volume;
-                                        if (Math.abs(sound.gainNode.gain.value - expectedVol) > 0.01) {
-                                            sound.gainNode.gain.value = expectedVol;
+                                        if (Math.abs(sound.gainNode.gain.value - localVolume) > 0.01) {
+                                            sound.gainNode.gain.value = localVolume;
                                         }
                                     }
                                 }
@@ -764,7 +854,7 @@ const handleDirectory = async (directory) => {
                     prevTimeVal = -1;
                 }
 
-                if (pl) {
+                if (pl && modeBtn && modeIcon) {
                     const md = getModeData(pl.mode);
                     if (cachedModeIcon !== md.icon) {
                         cachedModeIcon = md.icon;
@@ -776,12 +866,14 @@ const handleDirectory = async (directory) => {
                 const isRepeat = ps.repeat;
                 if (cachedRepeatState !== isRepeat) {
                     cachedRepeatState = isRepeat;
-                    if (isRepeat) {
-                        repeatBtn.classList.add("ear-active");
-                        setTooltip(repeatBtn, loc("EAR.LoopOn"));
-                    } else {
-                        repeatBtn.classList.remove("ear-active");
-                        setTooltip(repeatBtn, loc("EAR.LoopOff"));
+                    if (repeatBtn) {
+                        if (isRepeat) {
+                            repeatBtn.classList.add("ear-active");
+                            setTooltip(repeatBtn, loc("EAR.LoopOn"));
+                        } else {
+                            repeatBtn.classList.remove("ear-active");
+                            setTooltip(repeatBtn, loc("EAR.LoopOff"));
+                        }
                     }
                 }
 
@@ -795,6 +887,9 @@ const handleDirectory = async (directory) => {
             wrapper: player,
             playlistId: plId,
             trackNameEl: trackName,
+            syncVolumeUI: (v) => {
+                if (!volDragging && !wheelActive) applyVolVisual(v);
+            },
             cleanup: () => {
                 document.removeEventListener("pointermove", onSeekMove, true);
                 document.removeEventListener("pointerup", onSeekUp, true);
@@ -823,6 +918,11 @@ Hooks.on("updatePlaylistSound", (sound, changes) => {
     if (interactionLock) return;
     const stopped = changes.playing === false && (changes.pausedTime === undefined || changes.pausedTime === null);
     if (stopped) resetControl(sound.id);
+    // If a track just started/resumed, enforce our local volume instead of Foundry's stored value.
+    if (changes.playing === true || changes.volume !== undefined) {
+        setTimeout(() => applyLocalVolume(sound, localVolume), 50);
+        setTimeout(() => applyLocalVolume(sound, localVolume), 400);
+    }
     refreshDirectory();
 });
 
@@ -870,17 +970,22 @@ document.addEventListener("wheel", (e) => {
     const text = earPlayer.querySelector(".ear-vol-text");
     if (text) text.textContent = Math.round(nv * 100) + "%";
 
-    applyLocalVolume(ps, nv);
+    localVolume = nv;
+    if (nv > 0) savedLocalVolume = nv;
+    applyLocalVolumeToAll();
+
+    // Sync every other visible EAR player's UI so volume looks shared.
+    for (const sId of Object.keys(controls)) {
+        if (sId === soundId) continue;
+        const ctrl = controls[sId];
+        if (ctrl && ctrl.syncVolumeUI) ctrl.syncVolumeUI(nv);
+    }
 
     if (globalWheelThrottle) clearTimeout(globalWheelThrottle);
     globalWheelThrottle = setTimeout(async () => {
         globalWheelThrottle = null;
         const saveVol = parseFloat(slider.value);
-        setInteractionLock(true);
-        await safeUpdate(ps, { volume: saveVol });
-        setTimeout(() => {
-            setInteractionLock(false);
-            wheelActive = false;
-        }, 150);
+        await setLocalVolume(saveVol);
+        setTimeout(() => { wheelActive = false; }, 150);
     }, 600);
 }, { passive: false, capture: true });

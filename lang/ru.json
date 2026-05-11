@@ -11,5 +11,6 @@
   "EAR.ModeDisabled": "Отключён",
   "EAR.ModeSequential": "Последовательно",
   "EAR.ModeShuffle": "Перемешать",
-  "EAR.ModeSimultaneous": "Одновременно"
+  "EAR.ModeSimultaneous": "Одновременно",
+  "EAR.LocalVolume": "Локальная громкость"
 }
