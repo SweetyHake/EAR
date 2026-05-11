@@ -30,9 +30,6 @@
   "languages": [
     { "lang": "en",      "name": "English",    "path": "lang/en.json" },
     { "lang": "ru",      "name": "Русский",    "path": "lang/ru.json" }
-    {
-      "flags": {}
-    }
   ],
   "description": "<p>Enhanced audio player UI for Foundry VTT playlists.</p>",
   "flags": {}
