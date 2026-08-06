@@ -324,10 +324,17 @@
     cursor: pointer;
 }
 
+/* Preview button — 16×16 like the other small controls in .sound-controls. */
+/* Preview button — uses Foundry's `.inline-control` mixin, overrides only active state. */
+[data-ear-preview][data-ear-preview].ear-active {
+    --button-text-color: var(--ear-accent) !important;
+}
 
-
-
-
-
-
-
+/* Force horizontal row for sound controls — override Foundry's 32px flex constraint. */
+html body #sidebar #playlists .playlist .sound .sound-controls {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    flex: unset !important;
+    gap: 0 3px;
+}

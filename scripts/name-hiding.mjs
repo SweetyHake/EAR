@@ -1,162 +1,137 @@
+import { log, MODULE_ID, HIDE_NAMES_SETTING, invalidateHideNamesCache, shouldHideName, getChannelName } from "./common.mjs";
+
 const PlaylistDir = foundry.applications.sidebar.tabs.PlaylistDirectory;
 
-const CHANNEL_KEYS = {
-    music: "AUDIO.CHANNELS.MUSIC.label",
-    environment: "AUDIO.CHANNELS.ENVIRONMENT.label",
-    interface: "AUDIO.CHANNELS.INTERFACE.label"
-};
-
-function shouldHideName(playlist) {
-    if (game.user.isGM) return false;
-    const level = playlist.ownership?.[game.user.id] ?? playlist.ownership?.default ?? 0;
-    return level < CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER;
-}
-
-function getReplacementName(playlist) {
-    const channel = playlist.channel || "music";
-    const key = CHANNEL_KEYS[channel];
-    if (key) return game.i18n.localize(key);
-    return channel.charAt(0).toUpperCase() + channel.slice(1);
-}
-
-function hideNamesForPlayers() {
+// ── Core name-hiding logic ──────────────────────────────────────────────────
+// Hides track names (replacing them with the channel name) or, when the module
+// setting is off, restores the original names that this module replaced.
+function hideSoundNames() {
     if (game.user.isGM) return;
 
-    document.querySelectorAll("#playlists .sound").forEach(el => {
-        let playlistId = el.dataset.playlistId;
-        if (!playlistId) {
-            const parent = el.closest("[data-playlist-id]");
-            if (parent) playlistId = parent.dataset.playlistId;
-        }
-        if (!playlistId) {
-            const soundId = el.dataset.soundId;
-            if (soundId) {
-                for (const pl of game.playlists) {
-                    if (pl.sounds.get(soundId)) {
-                        playlistId = pl.id;
-                        break;
-                    }
-                }
-            }
-        }
-        if (!playlistId) return;
+    for (const el of document.querySelectorAll("#playlists .sound")) {
+        const playlist = resolvePlaylist(el);
+        if (!playlist) continue;
+        const ps = playlist.sounds.get(el.dataset.soundId);
+        if (!ps) continue;
 
-        const playlist = game.playlists.get(playlistId);
-        if (!playlist || !shouldHideName(playlist)) return;
+        const hide = shouldHideName(playlist);
+        const replacement = hide ? getChannelName(playlist) : ps.name;
 
-        const replacement = getReplacementName(playlist);
-
-        el.querySelectorAll(".sound-name, h4, .ear-track-name, header .name, header span, a.sound-name").forEach(nameEl => {
+        // Named elements in Foundry's native UI
+        for (const nameEl of el.querySelectorAll(".sound-name, h4, header .name, header span, a.sound-name")) {
             if (nameEl.textContent.trim() !== replacement) {
                 nameEl.textContent = replacement;
                 nameEl.title = "";
-                if (nameEl.dataset) {
-                    nameEl.dataset.tooltip = "";
-                }
+                if (nameEl.dataset) nameEl.dataset.tooltip = "";
             }
-        });
+        }
 
-        el.querySelectorAll("*").forEach(child => {
-            if (child.children.length === 0 && child.textContent.trim().length > 0) {
-                const tag = child.tagName.toLowerCase();
-                if (tag === "i" || tag === "button" || tag === "input" || tag === "select") return;
-                if (child.classList.contains("ear-time-label") || child.classList.contains("ear-time-right")) return;
-                if (child.closest(".ear-transport") || child.closest(".ear-volume-row") || child.closest(".ear-slider-row")) return;
-                if (child.classList.contains("sound-name") || child.classList.contains("ear-track-name")) return;
+        // EAR player track name
+        for (const earEl of el.querySelectorAll(".ear-track-name")) {
+            earEl.textContent = replacement;
+            earEl.title = "";
+            if (earEl.dataset) earEl.dataset.tooltip = "";
+        }
 
-                const soundId = el.dataset.soundId;
-                if (soundId) {
-                    for (const pl of game.playlists) {
-                        const ps = pl.sounds.get(soundId);
-                        if (ps && child.textContent.trim() === ps.name) {
-                            child.textContent = replacement;
-                            child.title = "";
-                            if (child.dataset) child.dataset.tooltip = "";
-                        }
-                    }
-                }
+        // Walk leaf text nodes to catch any other mention of the track name.
+        // Replaced nodes are marked so they can be restored when hiding is off.
+        for (const child of el.querySelectorAll("*")) {
+            if (child.children.length > 0) continue;
+            if (child.closest(".ear-player")) continue; // EAR widgets handle names themselves
+            const tag = child.tagName.toLowerCase();
+            if (tag === "i" || tag === "button" || tag === "input" || tag === "select") continue;
+            if (child.dataset.earHidden || child.textContent.trim() === ps.name) {
+                child.textContent = replacement;
+                child.title = "";
+                if (child.dataset) child.dataset.tooltip = "";
+                if (hide) child.dataset.earHidden = "1";
+                else delete child.dataset.earHidden;
             }
-        });
-    });
+        }
+    }
 }
 
-function startObserver() {
+function resolvePlaylist(el) {
+    let plId = el.dataset.playlistId;
+    if (!plId) {
+        const parent = el.closest("[data-playlist-id]");
+        if (parent) plId = parent.dataset.playlistId;
+    }
+    if (!plId) {
+        const sid = el.dataset.soundId;
+        if (sid) {
+            for (const pl of game.playlists) {
+                if (pl.sounds.get(sid)) { plId = pl.id; break; }
+            }
+        }
+    }
+    return plId ? game.playlists.get(plId) : null;
+}
+
+// ── Single MutationObserver (replaces setTimeout cascades) ──────────────────
+let observer = null;
+let debounce = null;
+let hookDebounce = null;
+
+// Debounced variant for high-frequency hooks (volume changes, sound updates)
+// — a full DOM scan on every one of them would lag big playlists.
+function scheduleHideNames() {
     if (game.user.isGM) return;
-
-    const target = document.querySelector("#sidebar");
-    if (!target || target.dataset.earNameObserver) return;
-    target.dataset.earNameObserver = "1";
-
-    let debounceTimer = null;
-    const observer = new MutationObserver((mutations) => {
-        let shouldRun = false;
-        for (const m of mutations) {
-            const t = m.target;
-            if (t && t.closest && t.closest(".ear-player")) continue;
-            if (m.type === "childList" && m.addedNodes.length > 0) {
-                shouldRun = true;
-                break;
-            }
-            if (m.type === "characterData") {
-                shouldRun = true;
-                break;
-            }
-        }
-        if (shouldRun) {
-            if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-                debounceTimer = null;
-                hideNamesForPlayers();
-            }, 100);
-        }
-    });
-
-    observer.observe(target, {
-        childList: true,
-        subtree: true,
-        characterData: true
-    });
+    clearTimeout(hookDebounce);
+    hookDebounce = setTimeout(() => { hookDebounce = null; hideSoundNames(); }, 60);
 }
 
-Hooks.on("ready", () => {
+function ensureObserver() {
+    if (game.user.isGM || observer) return;
+    const sidebar = document.querySelector("#sidebar");
+    if (!sidebar) return;
+
+    observer = new MutationObserver(mutations => {
+        let relevant = false;
+        for (const m of mutations) {
+            // Text nodes have no `.closest` — resolve to their parent element so the
+            // `.ear-player` filter works and EAR's own time updates are ignored.
+            const el = m.target.nodeType === Node.TEXT_NODE ? m.target.parentElement : m.target;
+            if (el?.closest?.(".ear-player")) continue;
+            if (m.type === "childList" && m.addedNodes.length) { relevant = true; break; }
+            if (m.type === "characterData") { relevant = true; break; }
+        }
+        if (!relevant) return;
+        clearTimeout(debounce);
+        debounce = setTimeout(() => { debounce = null; hideSoundNames(); }, 80);
+    });
+
+    observer.observe(sidebar, { childList: true, subtree: true, characterData: true });
+    log.debug("Name-hiding observer started");
+}
+
+// ── Hooks ───────────────────────────────────────────────────────────────────
+Hooks.once("init", () => {
+    game.settings.register(MODULE_ID, HIDE_NAMES_SETTING, {
+        name: "EAR.HideTrackNames",
+        hint: "EAR.HideTrackNamesHint",
+        scope: "client",
+        config: true,
+        type: Boolean,
+        default: true,
+        onChange: () => {
+            invalidateHideNamesCache();
+            hideSoundNames();
+        },
+    });
+});
+
+Hooks.once("ready", () => {
     if (!game.user.isGM) {
-        setTimeout(() => {
-            hideNamesForPlayers();
-            startObserver();
-        }, 1000);
+        hideSoundNames();
+        setTimeout(ensureObserver, 1000);
     }
 });
 
-Hooks.on("renderPlaylistDirectory", () => {
-    setTimeout(hideNamesForPlayers, 50);
-    setTimeout(hideNamesForPlayers, 150);
-    setTimeout(hideNamesForPlayers, 300);
-    setTimeout(hideNamesForPlayers, 600);
-    setTimeout(hideNamesForPlayers, 1200);
-});
-
-Hooks.on("renderSidebarTab", app => {
-    if (app instanceof PlaylistDir) {
-        setTimeout(hideNamesForPlayers, 50);
-        setTimeout(hideNamesForPlayers, 150);
-        setTimeout(hideNamesForPlayers, 300);
-        setTimeout(hideNamesForPlayers, 600);
-    }
-});
-
-Hooks.on("updatePlaylistSound", () => {
-    setTimeout(hideNamesForPlayers, 100);
-    setTimeout(hideNamesForPlayers, 300);
-    setTimeout(hideNamesForPlayers, 700);
-});
-
-Hooks.on("updatePlaylist", () => {
-    setTimeout(hideNamesForPlayers, 100);
-    setTimeout(hideNamesForPlayers, 300);
-    setTimeout(hideNamesForPlayers, 700);
-});
-
-Hooks.on("globalPlaylistVolumeChanged", () => {
-    setTimeout(hideNamesForPlayers, 100);
-    setTimeout(hideNamesForPlayers, 400);
-});
+// Reactive: render hooks run immediately (renders are infrequent), the rest are
+// debounced — the observer + debounce handles de-duplication.
+Hooks.on("renderPlaylistDirectory", () => { hideSoundNames(); ensureObserver(); });
+Hooks.on("renderSidebarTab",        app => { if (app instanceof PlaylistDir) { hideSoundNames(); ensureObserver(); } });
+Hooks.on("updatePlaylistSound",     () => scheduleHideNames());
+Hooks.on("updatePlaylist",          () => scheduleHideNames());
+Hooks.on("globalPlaylistVolumeChanged", () => scheduleHideNames());
