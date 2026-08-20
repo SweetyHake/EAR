@@ -1,0 +1,74 @@
+<legend>{{localize "EAR.Radio.Config.Title"}}</legend>
+
+<div class="form-group">
+    <label>{{localize "EAR.Radio.Config.Enable"}}</label>
+    <div class="form-fields"><input type="checkbox" data-radio-enable {{checked enabled}}></div>
+    <p class="hint">{{localize "EAR.Radio.Config.Hint"}}</p>
+</div>
+
+{{#if enabled}}
+<div class="form-group">
+    <label>{{localize "EAR.Radio.Config.Playlist"}}</label>
+    <div class="form-fields">
+        <select data-radio-playlist>
+            <option value="">{{localize "EAR.Radio.Config.NoPlaylist"}}</option>
+            {{#each playlists}}<option value="{{id}}" {{#if (eq id ../playlistId)}}selected{{/if}}>{{name}}</option>{{/each}}
+        </select>
+    </div>
+</div>
+
+<div class="ear-radio-console">
+    <div class="ear-radio-transport">
+        <button type="button" class="plain ear-radio-icon-button" data-radio-action="prev"
+            data-tooltip="{{localize 'PLAYLIST.Backward'}}" aria-label="{{localize 'PLAYLIST.Backward'}}">
+            <i class="fa-solid fa-backward-step" inert></i>
+        </button>
+        <button type="button" class="plain ear-radio-power{{#if powered}} active{{/if}}" data-radio-action="power"
+            data-tooltip="{{localize 'EAR.Radio.Config.Power'}}" aria-label="{{localize 'EAR.Radio.Config.Power'}}">
+            <i class="fa-solid fa-power-off" inert></i>
+        </button>
+        <button type="button" class="plain ear-radio-icon-button" data-radio-action="next"
+            data-tooltip="{{localize 'PLAYLIST.Forward'}}" aria-label="{{localize 'PLAYLIST.Forward'}}">
+            <i class="fa-solid fa-forward-step" inert></i>
+        </button>
+    </div>
+    <div class="ear-radio-now">
+        <span class="ear-radio-status">{{localize "EAR.Radio.Config.NowPlaying"}}</span>
+        {{#if currentTrack}}
+        <strong class="ear-radio-now-name" data-tooltip="{{currentTrack.name}}">{{currentTrack.name}}</strong>
+        {{else}}
+        <strong class="ear-radio-now-name muted">{{localize "EAR.Radio.Config.NoTrack"}}</strong>
+        {{/if}}
+    </div>
+    <span class="ear-radio-time"><span data-radio-current-time>0:00</span><span class="muted"> / </span><span data-radio-track-duration>--:--</span></span>
+    <input class="ear-radio-seek" type="range" min="0" max="1" step="0.1" value="0" data-radio-seek disabled
+        aria-label="{{localize 'EAR.Radio.Config.Seek'}}">
+</div>
+
+<div class="form-group stacked">
+    <label>{{localize "EAR.Radio.Config.Tracks"}}</label>
+    <div class="ear-radio-tracks">
+        {{#each tracks}}
+        <div class="ear-radio-track{{#if isCurrent}} current{{/if}}" data-index="{{@index}}">
+            <button type="button" class="plain ear-radio-track-play" data-radio-action="play" data-index="{{@index}}"
+                data-tooltip="{{localize 'PLAYLIST.SoundPlay'}}" aria-label="{{localize 'PLAYLIST.SoundPlay'}}">
+                <i class="fa-solid {{#if isCurrent}}fa-volume-high{{else}}fa-play{{/if}}" inert></i>
+            </button>
+            <span class="ear-radio-track-name" data-tooltip="{{name}}">{{name}}</span>
+            <span class="ear-radio-track-duration muted">--:--</span>
+        </div>
+        {{/each}}
+        {{#unless tracks.length}}<div class="ear-radio-empty muted">{{localize "EAR.Radio.Config.Empty"}}</div>{{/unless}}
+    </div>
+</div>
+
+<div class="form-group">
+    <label>{{localize "EAR.Radio.Config.Mode"}}</label>
+    <div class="form-fields"><select data-radio-mode>{{selectOptions modeChoices selected=radio.mode localize=true}}</select></div>
+    <p class="hint">{{localize "EAR.Radio.Config.ModeHint"}}</p>
+</div>
+<div class="form-group">
+    <label>{{localize "EAR.Radio.Config.Noise"}}</label>
+    <div class="form-fields"><input type="checkbox" data-radio-noise {{checked noise}}></div>
+</div>
+{{/if}}
