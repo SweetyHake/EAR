@@ -2,7 +2,6 @@ import { MODULE_ID, log, loc, clampRatio } from "./common.mjs";
 
 export { MODULE_ID, log, loc, clampRatio };
 export const FLAGS_KEY = "ag-radio";
-export const SETTING_NOISE_VOLUME = "radioNoiseVolume";
 
 export function getRadioFlags(doc) {
     const flags = doc?.flags?.[FLAGS_KEY];

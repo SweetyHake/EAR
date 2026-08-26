@@ -303,6 +303,124 @@
     flex-shrink: 0;
 }
 
+/* Playlist group header — owns the PLAYLIST volume stage. */
+.ear-pl-header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 6px;
+    padding: 4px 8px 4px 10px;
+    background: var(--ear-bg-dark);
+    border-radius: 6px 6px 0 0;
+}
+
+/* Single accent rail for the whole group: ONE element drawn by the header,
+   its height (--ear-group-h, set by syncGroupHeaders) reaches from the header
+   top to the bottom of the last track. One element = one width, no seams and
+   no per-track mismatch. Tips curve to the right like the block corners. */
+.ear-pl-header::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 3px;
+    height: var(--ear-group-h, 100%);
+    background: var(--ear-accent);
+    /* Tips curve to the RIGHT over the block's 6px corner: horizontal radius
+       spans the full 3px width, vertical matches the corner. */
+    border-top-right-radius: 3px 6px;
+    border-bottom-right-radius: 3px 6px;
+    pointer-events: none;
+    transition: height 0.25s ease;
+}
+
+.ear-pl-header.ear-collapsed {
+    border-radius: 6px;
+}
+
+.ear-pl-name {
+    flex: 1;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ear-text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.ear-pl-header .ear-volume-slider {
+    width: 70px;
+    max-width: 70px;
+}
+
+.ear-pl-header .ear-controls-group {
+    flex-shrink: 0;
+}
+
+.ear-pl-header .ear-transport-btn {
+    font-size: 11px;
+    width: 18px;
+    height: 18px;
+}
+
+.ear-pl-header .ear-collapse-btn i {
+    transition: transform 0.15s;
+}
+
+.ear-pl-header .ear-collapse-btn:hover i {
+    transform: scale(1.15);
+}
+
+/* Foundry's own row spacing would break the continuous group block — collapse
+   it so the header's bottom edge and the tracks' top edges absorb each other. */
+#playlists .currently-playing .playlist-sounds {
+    gap: 0 !important;
+    row-gap: 0 !important;
+    padding-block: 0 !important;
+}
+
+#playlists .currently-playing .sound:has(> .ear-player.ear-grouped) {
+    margin: 0;
+    padding: 0;
+}
+
+/* Collapse/expand animation state (set by animateGroupCollapse). */
+#playlists .currently-playing .sound.ear-animating {
+    overflow: hidden;
+    transition: height 0.25s ease, opacity 0.2s ease;
+}
+
+/* Indent grouped tracks: no own top radius, no shadow, no vertical gaps —
+   they read as one continuous body under the header. The indent equals the
+   rail width (3px), so the track box starts flush at the rail's right edge.
+   width:auto cancels the base 100% so nothing overflows the right edge. */
+.ear-player.ear-grouped {
+    width: auto;
+    margin: 0 0 0 3px;
+    padding-left: 12px;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+/* No own accent notch — the group rail is drawn by the header. */
+.ear-player.ear-grouped::before {
+    display: none;
+}
+
+/* Last track of the group closes the block (class set by syncGroupHeaders —
+   ":last-child" is unusable, .sound siblings of different playlists mix). */
+.ear-player.ear-group-end {
+    border-radius: 0 0 6px 6px;
+}
+
 /* Read-only player (non-GM players): show only volume + progress + time. */
 .ear-player.ear-readonly {
     padding-left: 14px;

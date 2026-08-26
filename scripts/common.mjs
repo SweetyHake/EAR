@@ -68,31 +68,6 @@ export function getDisplayName(ps) {
     return getChannelName(playlist);
 }
 
-// ── Volume slider target ─────────────────────────────────────────────────────
-// What the EAR volume slider controls: the current track, the whole playlist,
-// or all music (core.globalPlaylistVolume).
-export const VOLUME_TARGET_SETTING = "volumeTarget";
-export const VOLUME_TARGET = Object.freeze({
-    TRACK:    "track",
-    PLAYLIST: "playlist",
-    MUSIC:    "music",
-});
-
-let _volumeTargetCache = undefined;
-
-export function getVolumeTarget() {
-    if (_volumeTargetCache === undefined) {
-        try {
-            const v = game.settings.get(MODULE_ID, VOLUME_TARGET_SETTING);
-            _volumeTargetCache = Object.values(VOLUME_TARGET).includes(v) ? v : VOLUME_TARGET.PLAYLIST;
-        }
-        catch (_) { _volumeTargetCache = VOLUME_TARGET.PLAYLIST; }
-    }
-    return _volumeTargetCache;
-}
-
-export function invalidateVolumeTarget() { _volumeTargetCache = undefined; }
-
 // ── General utilities ───────────────────────────────────────────────────────
 export function loc(key, fallback) {
     return game.i18n?.localize(key) ?? fallback ?? key;
@@ -222,19 +197,10 @@ export async function safeUpdate(doc, data) {
     try { await doc.update(data); } catch (e) { log.error("Update:", e.message); }
 }
 
-// ── Fade / crossfade helpers ─────────────────────────────────────────────────
-// Set of soundIds currently undergoing a scheduled gain ramp.
-// The EarState live-update loop skips volume enforcement for these.
-// `fadeGain` is the sole owner of add/delete for this set — `crossfade` and other
-// callers must not mutate it directly, or a sound id can leak and permanently
-// disable volume enforcement for that track.
-export const fadingSounds = new Set();
-const _fadeTimers = {}; // soundId → setTimeout id
-
-function clearFadeTimer(id) {
-    if (_fadeTimers[id]) { clearTimeout(_fadeTimers[id]); delete _fadeTimers[id]; }
-}
-
+// ── Scheduled-gain cancellation ──────────────────────────────────────────────
+// Foundry schedules its own 500ms Web Audio ramp to the server volume on every
+// document update — writing `.value` during an active ramp is silently ignored,
+// so callers cancel it first when they need an immediate volume change.
 export function cancelGainRamps(ps) {
     try {
         const s = ps.sound;
@@ -243,62 +209,6 @@ export function cancelGainRamps(ps) {
         if (!ctx) return;
         s.gainNode.gain.cancelScheduledValues(ctx.currentTime);
     } catch (_) {}
-}
-
-/**
- * Smoothly ramp a PlaylistSound's Web Audio gainNode to `targetVol` over `duration` seconds.
- * Falls back to an instant set if no AudioContext / gainNode is available.
- * `onComplete` fires after the ramp finishes.
- * Safe to call repeatedly for the same sound — old ramp is cancelled and timer replaced.
- * Every exit path releases the sound from `fadingSounds`, so a sound id can never leak.
- */
-export function fadeGain(ps, targetVol, duration, onComplete) {
-    const sound = ps.sound;
-    if (!sound) {
-        clearFadeTimer(ps.id);
-        fadingSounds.delete(ps.id);
-        if (onComplete) onComplete();
-        return;
-    }
-    const ctx = sound.context || sound._context;
-    if (!ctx || !sound.gainNode) {
-        applyLocalVolume(ps, targetVol);
-        clearFadeTimer(ps.id);
-        fadingSounds.delete(ps.id);
-        if (onComplete) onComplete();
-        return;
-    }
-
-    cancelGainRamps(ps);
-    const now = ctx.currentTime;
-    sound.gainNode.gain.setValueAtTime(sound.gainNode.gain.value, now);
-    sound.gainNode.gain.linearRampToValueAtTime(targetVol, now + duration);
-
-    fadingSounds.add(ps.id);
-    // Clear any previous completion timer for this sound
-    clearFadeTimer(ps.id);
-
-    const safety = Math.max(duration * 1000 + 100, 200);
-    _fadeTimers[ps.id] = setTimeout(() => {
-        delete _fadeTimers[ps.id];
-        fadingSounds.delete(ps.id);
-        if (onComplete) onComplete();
-    }, safety);
-}
-
-/**
- * Crossfade: fade out `fromPs` while simultaneously fading in `toPs`.
- * Both ramps share the same duration.  `fromPs` is stopped after its fade completes.
- * `fadeGain` manages the `fadingSounds` bookkeeping for both sounds.
- */
-export function crossfade(fromPs, toPs, fromVol, toVol, duration) {
-    // Start next at 0, then ramp up
-    applyLocalVolume(toPs, 0.0001);
-    fadeGain(fromPs, 0, duration);
-    fadeGain(toPs, toVol, duration, () => {
-        // Fade complete — stop the old sound
-        try { fromPs.update?.({ playing: false, pausedTime: null }).catch(() => {}); } catch (_) {}
-    });
 }
 
 // ── Preview (local-only playback) ────────────────────────────────────────────

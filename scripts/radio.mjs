@@ -1,5 +1,3 @@
-import { MODULE_ID } from "./common.mjs";
-import { SETTING_NOISE_VOLUME } from "./radio-common.mjs";
 import { patchAmbientSync, scanPlaylist } from "./radio-engine.mjs";
 import { injectRadioConfig, refreshOpenConfig, closeConfigIfOpen } from "./radio-config.mjs";
 
@@ -8,11 +6,6 @@ const playlistSyncTimers = new Map();
 
 Hooks.once("init", () => {
     legacyRadioActive = game.modules.get("ag-radio")?.active === true;
-    game.settings.register(MODULE_ID, SETTING_NOISE_VOLUME, {
-        name: "EAR.Radio.Settings.NoiseVolume.Name", hint: "EAR.Radio.Settings.NoiseVolume.Hint",
-        scope: "world", config: true, type: Number, default: 0.35,
-        range: { min: 0, max: 1, step: 0.05 }
-    });
     if (!legacyRadioActive) patchAmbientSync();
 });
 

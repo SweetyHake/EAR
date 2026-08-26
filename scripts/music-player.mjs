@@ -3,22 +3,17 @@ import {
     getAudioNode, getCurrentTime, getDuration, applyLocalVolume, getVolumeIcon,
     updateVolumeSliderFill, getPlaybackOrder, getNextSoundFromOrder, getPrevSoundFromOrder,
     safeUpdate, getDisplayName,
-    fadeGain, fadingSounds, cancelGainRamps, crossfade,
+    cancelGainRamps,
     previewSound, stopPreview, isPreviewing, stopAllPreviews,
     getNormalizationGain,
     analyzePlaylist, setNormalizationGains, clearNormalization, invalidateNormGains, NORM_SETTING,
-    VOLUME_TARGET_SETTING, VOLUME_TARGET, getVolumeTarget, invalidateVolumeTarget,
 } from "./common.mjs";
 
 log.info("Initialized");
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const SETTING_PLAYLIST_VOLUMES = "playlistVolumes";
-const SETTING_FADE_DURATION    = "fadeDuration";
-const SETTING_XFADE_DURATION   = "crossfadeDuration";
-const SETTING_FADE_ENABLED     = "fadeEnabled";
-const SETTING_XFADE_ENABLED    = "crossfadeEnabled";
-const SETTING_TRACK_INTERVAL   = "trackInterval";
+const SETTING_TRACK_VOLUMES    = "trackVolumes";
 const PLAYLIST_MODES = Object.freeze([
     { value: -1, icon: "fa-solid fa-ban",             locKey: "PLAYLIST.ModeDisabled" },
     { value:  0, icon: "fa-regular fa-circle-right",  locKey: "PLAYLIST.ModeSequential" },
@@ -35,16 +30,15 @@ function getNextMode(cur)  { const i = MODE_ORDER.indexOf(cur); return i < 0 ? M
 class EarState {
     controls             = new Map();   // soundId → EarPlayerWidget
     playlistVolumes      = {};          // playlistId → 0..1
+    trackVolumes         = {};          // soundId → 0..1 LOCAL per-user track volume
     savedPlaylistVolumes = {};          // playlistId → last non-zero
     savedTrackVolumes    = {};          // soundId → last non-zero track volume
     savedGlobalVolume    = undefined;   // last non-zero core.globalPlaylistVolume
     playHistory          = [];          // [{playlistId, soundId}]
     showRemaining        = false;
-    trackEnded           = {};          // playlistId → true (natural end, awaiting interval)
-    intervalWait         = new Set();   // soundId → playing but held silent (track interval)
-    _userStopped         = {};          // soundId → true (clicked stop, skip interval)
     _pendingDelete       = new Map();   // soundId → setTimeout id (lazy destroy)
-    closing              = new Set();   // soundId → fade-out in progress, row hidden
+    plHeaders            = new Map();   // playlistId → group header refs {root, icon, slider, text}
+    collapsedPls         = new Set();   // playlistIds collapsed in the player (session-scoped)
 
     // Interaction lock
     #interactionLock      = false;
@@ -89,6 +83,35 @@ class EarState {
         return this.playlistVolumes[plId] ?? 1;
     }
 
+    // Track volume is LOCAL: it lives in a client-scope setting and is never
+    // written to the PlaylistSound document (ps.volume is shared with every
+    // client — using it leaked one user's mixing into everyone else's).
+    getTrackVolume(sId) {
+        return clampRatio(this.trackVolumes[sId] ?? 1);
+    }
+
+    #trackVolumeSaveTimer = null;
+    scheduleTrackVolumeSave() {
+        clearTimeout(this.#trackVolumeSaveTimer);
+        this.#trackVolumeSaveTimer = setTimeout(() => {
+            this.#trackVolumeSaveTimer = null;
+            try {
+                game.settings.set(MODULE_ID, SETTING_TRACK_VOLUMES, { ...this.trackVolumes });
+            } catch (e) { log.error("Track volume save:", e.message); }
+        }, 400);
+    }
+
+    loadTrackVolumesFromSettings() {
+        try {
+            const raw = game.settings.get(MODULE_ID, SETTING_TRACK_VOLUMES);
+            if (typeof raw === "object" && raw !== null) {
+                for (const [sId, v] of Object.entries(raw)) {
+                    this.trackVolumes[sId] = clampRatio(Number(v) || 0);
+                }
+            }
+        } catch (e) {}
+    }
+
     async setPlaylistVolume(plId, v) {
         v = clampRatio(Number(v) || 0);
         this.playlistVolumes[plId] = v;
@@ -106,17 +129,63 @@ class EarState {
         if (!pl) return;
         for (const ps of pl.sounds) {
             if (!ps.playing && !ps.sound) continue;
-            if (fadingSounds.has(ps.id)) continue;
-            // A track waiting out the silence interval must stay silent.
-            if (this.intervalWait.has(ps.id)) { applyLocalVolume(ps, 0.0001); continue; }
             const gain = getNormalizationGain(ps);
-            applyLocalVolume(ps, clampRatio(vol * (ps.volume ?? 1) * gain));
+            // Cancel any scheduled ramp (e.g. Foundry's 500ms fade to server
+            // volume) so the playlist slider takes effect immediately.
+            cancelGainRamps(ps);
+            applyLocalVolume(ps, clampRatio(vol * S.getTrackVolume(ps.id) * gain));
         }
     }
 
     applyAllVolumes() {
         for (const pl of game.playlists?.contents ?? []) {
             this.applyVolumeToPlaylist(pl.id);
+        }
+    }
+
+    // Sync a group header's slider visuals to the playlist volume.
+    syncPlaylistHeader(plId, v) {
+        const hdr = this.plHeaders.get(plId);
+        if (!hdr || !hdr.root.isConnected) return;
+        if (hdr.dragging) return;
+        updateVolumeSliderFill(hdr.slider, v);
+        hdr.slider.value = v;
+        hdr.icon.className = getVolumeIcon(v) + " ear-volume-icon";
+        hdr.text.textContent = Math.round(v * 100) + "%";
+    }
+
+    syncAllPlaylistHeaders() {
+        for (const plId of this.plHeaders.keys()) {
+            this.syncPlaylistHeader(plId, this.getPlaylistVolume(plId));
+        }
+    }
+
+    // Sync the playlist-level Repeat / Mode buttons of a group header.
+    // Called from widget ticks (150ms), so all writes are cache-guarded.
+    syncPlaylistHeaderControls(plId) {
+        const hdr = this.plHeaders.get(plId);
+        if (!hdr?.modeBtn || !hdr.root.isConnected) return;
+        const pl = game.playlists.get(plId);
+        if (!pl) return;
+
+        // Repeat is a per-sound flag; at playlist level it reflects (and
+        // toggles) the currently playing sounds. With nothing playing the
+        // whole playlist is the pool, so the state stays visible and the
+        // button keeps working — the next started track honors it.
+        const playingSounds = pl.sounds.filter(s => s.playing);
+        const pool = playingSounds.length ? playingSounds : pl.sounds;
+        const rep = pool.some(s => s.repeat);
+        if (hdr.cachedRepeat !== rep) {
+            hdr.cachedRepeat = rep;
+            hdr.repeatBtn.classList.toggle("ear-active", rep);
+            setTooltip(hdr.repeatBtn, game.i18n.localize(rep ? "EAR.RepeatOn" : "EAR.RepeatOff"));
+        }
+
+        const md = getModeData(pl.mode);
+        if (hdr.cachedMode !== md.icon) {
+            hdr.cachedMode = md.icon;
+            hdr.modeIcon.className = md.icon;
+            setTooltip(hdr.modeBtn, getModeLabel(pl.mode));
         }
     }
 
@@ -160,6 +229,65 @@ class EarState {
 
 const S = new EarState();
 
+// ── VolumeController ────────────────────────────────────────────────────────
+// Single owner of volume semantics. Effective loudness is a chain:
+//   core global channel × playlist volume (EAR, client) × track volume (LOCAL
+//   client setting) × normalization. NOTHING here writes ps.volume — that is a
+//   server-side document field shared by all clients; per-track mixing must
+//   stay local to the user who tuned it.
+class VolumeController {
+    // ── Track stage (local) ─────────────────────────────────────────────
+    getTrackVolume(ps) { return S.getTrackVolume(ps.id); }
+
+    // Live apply (no persistence) — safe to call on every input event.
+    setTrackVolumeLive(ps, v) {
+        v = clampRatio(v);
+        S.trackVolumes[ps.id] = v;
+        // User intent wins: kill any scheduled automation before writing.
+        cancelGainRamps(ps);
+        const eff = clampRatio(S.getPlaylistVolume(ps.parent?.id) * v * getNormalizationGain(ps));
+        applyLocalVolume(ps, eff);
+    }
+
+    // Persist locally: immediate apply + debounced client-setting write.
+    async setTrackVolume(ps, v) {
+        v = clampRatio(v);
+        if (v > 0) S.savedTrackVolumes[ps.id] = v;
+        this.setTrackVolumeLive(ps, v);
+        S.scheduleTrackVolumeSave();
+    }
+
+    async toggleTrackMute(ps) {
+        const cur = this.getTrackVolume(ps);
+        if (cur > 0) S.savedTrackVolumes[ps.id] = cur;
+        await this.setTrackVolume(ps, cur > 0 ? 0 : (S.savedTrackVolumes[ps.id] ?? 1));
+    }
+
+    // ── Playlist stage (client setting) ─────────────────────────────────
+    getPlaylistVolume(plId) { return S.getPlaylistVolume(plId); }
+
+    // Live apply — updates every playing sound of the playlist + sibling UIs.
+    setPlaylistVolumeLive(plId, v) {
+        v = clampRatio(v);
+        S.playlistVolumes[plId] = v;
+        if (v > 0) S.savedPlaylistVolumes[plId] = v;
+        S.applyVolumeToPlaylist(plId);
+        S.syncPlaylistHeader(plId, v);
+    }
+
+    async setPlaylistVolume(plId, v) {
+        await S.setPlaylistVolume(plId, v);
+        S.syncPlaylistHeader(plId, clampRatio(Number(v) || 0));
+    }
+
+    async togglePlaylistMute(plId) {
+        const cur = this.getPlaylistVolume(plId);
+        await S.setPlaylistVolume(plId, cur > 0 ? 0 : (S.savedPlaylistVolumes[plId] || 1));
+    }
+}
+
+const VC = new VolumeController();
+
 // ── EarPlayerWidget ─────────────────────────────────────────────────────────
 class EarPlayerWidget {
     #abort;         // AbortController for DOM listeners
@@ -168,6 +296,7 @@ class EarPlayerWidget {
     #playlistId;
     #state;
     #volDragging  = false;
+    #volAlt       = false;
     #seekDragging = false;
     #seekOnMove   = null;
     #seekOnUp     = null;
@@ -175,17 +304,15 @@ class EarPlayerWidget {
     #prevTimeVal  = -1;
     #lastAudioCheck = 0;
     #updateTimer  = null;
+    #volHoldUntil = 0;   // timestamp: skip gain enforcement until doc catches up
 
     // Cached states to avoid redundant DOM writes
     #cachedPlay   = null;
-    #cachedMode   = null;
-    #cachedRepeat = null;
 
     // DOM refs
     #wrapper; #playIcon; #trackName;
     #volIcon; #volText; #volSlider;
     #curTime; #totalTime; #seekFill; #seekHandle;
-    #modeBtn; #modeIcon; #repeatBtn;
 
     constructor(soundId, playlistId, ps, pl, duration) {
         this.#soundId = soundId;
@@ -198,23 +325,22 @@ class EarPlayerWidget {
         this._startLiveUpdate();
     }
 
-    // ── Public API ──────────────────────────────────────────────────────
+    // Public API ──────────────────────────────────────────────────────
     get wrapper()     { return this.#wrapper; }
     get playlistId()  { return this.#playlistId; }
     get soundId()     { return this.#soundId; }
 
-    // Sync the slider to a playlist volume — only meaningful when the slider
-    // targets the whole playlist (other targets show their own values).
-    syncVolumeUI(v) {
-        if (getVolumeTarget() !== VOLUME_TARGET.PLAYLIST) return;
-        if (!this.#volDragging && !this.#state.wheelActive) this._applyVolVisual(v);
-    }
+    // Suppress gain enforcement for a while (covers Foundry's own gainNode
+    // resets while the user is adjusting the local volume).
+    holdVolume(ms) { this.#volHoldUntil = Math.max(this.#volHoldUntil, Date.now() + ms); }
 
-    // Sync the slider to the global music volume (used when targeting all music).
-    syncGlobalVolumeUI() {
-        if (getVolumeTarget() !== VOLUME_TARGET.MUSIC) return;
-        if (this.#volDragging || this.#state.wheelActive) return;
-        this._applyVolVisual(game.settings.get("core", "globalPlaylistVolume") ?? 1);
+    // Fresh document references. Handlers must NOT use the ps/pl captured at
+    // construction time: Foundry can re-create embedded documents, and updating
+    // a stale reference fails silently (e.g. "next track" leaving the old one
+    // playing).
+    #docs() {
+        const pl = game.playlists.get(this.#playlistId);
+        return { pl, ps: pl?.sounds.get(this.#soundId) };
     }
 
     updateName(name) {
@@ -257,12 +383,11 @@ class EarPlayerWidget {
         const displayName = getDisplayName(ps);
         const plVolume = this.#state.getPlaylistVolume(this.#playlistId);
         this.#state.playlistVolumes[this.#playlistId] = plVolume;
-        const initSlider = this._getSliderValue(ps, plVolume);
+        const initSlider = this._getSliderValue(ps);
         // Apply the full effective volume (playlist × track × normalization),
-        // regardless of what the slider controls — unless the track is waiting
-        // out the silence interval, in which case it must stay silent.
-        const eff = clampRatio(plVolume * (ps.volume ?? 1) * getNormalizationGain(ps));
-        applyLocalVolume(ps, S.intervalWait.has(this.#soundId) ? 0.0001 : eff);
+        // regardless of what the slider controls.
+        const eff = clampRatio(plVolume * S.getTrackVolume(this.#soundId) * getNormalizationGain(ps));
+        applyLocalVolume(ps, eff);
 
         // Root + data attrs
         const player = document.createElement("div");
@@ -359,23 +484,8 @@ class EarPlayerWidget {
 
             const prevBtn = c("button", "ear-transport-btn", `<i class="fa-solid fa-backward-step"></i>`, game.i18n.localize("PLAYLIST.Backward"));
             const nextBtn = c("button", "ear-transport-btn", `<i class="fa-solid fa-forward-step"></i>`, game.i18n.localize("PLAYLIST.Forward"));
-            const divider = document.createElement("div"); divider.classList.add("ear-divider");
-
-            this.#repeatBtn = c("button", "ear-transport-btn");
-            this.#repeatBtn.innerHTML = `<i class="fa-solid fa-repeat"></i>`;
-            setTooltip(this.#repeatBtn, game.i18n.localize(ps.repeat ? "EAR.RepeatOn" : "EAR.RepeatOff"));
-            if (ps.repeat) this.#repeatBtn.classList.add("ear-active");
-
-            const md = getModeData(pl?.mode ?? 0);
-            this.#modeBtn = c("button", "ear-transport-btn");
-            this.#modeIcon = document.createElement("i");
-            this.#modeIcon.className = md.icon;
-            this.#modeBtn.appendChild(this.#modeIcon);
-            setTooltip(this.#modeBtn, getModeLabel(pl?.mode ?? 0));
 
             cg.appendChild(prevBtn); cg.appendChild(nextBtn);
-            cg.appendChild(divider);
-            cg.appendChild(this.#repeatBtn); cg.appendChild(this.#modeBtn);
             bottomRow.appendChild(cg);
         }
 
@@ -402,6 +512,8 @@ class EarPlayerWidget {
         if (playBtn) {
             playBtn.addEventListener("click", async e => {
                 e.stopPropagation(); e.preventDefault();
+                const { ps, pl } = this.#docs();
+                if (!ps) return;
                 const wasPlaying = ps.playing;
                 // Optimistic visual feedback — the live-update loop corrects the
                 // icon if the update fails or another client changes the state.
@@ -413,14 +525,6 @@ class EarPlayerWidget {
                 if (wasPlaying) {
                     await safeUpdate(ps, { pausedTime: getCurrentTime(ps) || 0.001, playing: false });
                 } else {
-                    // If the track was closing (fade-out close in progress, row hidden),
-                    // starting it again cancels the close: stop the fade and re-show the row.
-                    if (S.closing.has(this.#soundId)) {
-                        S.closing.delete(this.#soundId);
-                        cancelGainRamps(ps);
-                        const row = this.#wrapper.closest(".sound");
-                        if (row) row.style.display = "";
-                    }
                     if (e.shiftKey && pl) {
                         const pm = pl.mode;
                         if (pm !== 2) await safeUpdate(pl, { mode: 2 });
@@ -433,43 +537,16 @@ class EarPlayerWidget {
             }, { signal });
         }
 
-        // Stop/close (with optional fade-out)
+        // Stop/close
         const closeBtn = this.#wrapper.querySelector(".ear-close-btn");
         if (closeBtn) {
             closeBtn.addEventListener("click", async e => {
                 e.stopPropagation(); e.preventDefault();
-                S._userStopped[this.#soundId] = true;
+                const { ps } = this.#docs();
+                if (!ps) return;
                 stopPreview(this.#soundId);
-
-                const fadeOn  = game.settings.get(MODULE_ID, SETTING_FADE_ENABLED);
-                const fadeDur = game.settings.get(MODULE_ID, SETTING_FADE_DURATION);
-                if (fadeOn && ps.playing && ps.sound?.gainNode) {
-                    // Instant UI feedback: hide the whole row right away. The audio
-                    // still fades out in the background; once it reaches silence the
-                    // sound is stopped and Foundry drops the (hidden) row.
-                    // The id stays in `S.closing` until the fade completes, so
-                    // handleDirectory re-hides the row if Foundry re-renders it
-                    // (e.g. when another closing track finishes and the directory
-                    // is rebuilt) — otherwise the row flickers back into view.
-                    S.closing.add(this.#soundId);
-                    const row = this.#wrapper.closest(".sound");
-                    if (row) row.style.display = "none";
-                    fadeGain(ps, 0, fadeDur, async () => {
-                        // If the track was started again during the fade, the play
-                        // handler has already cleared the closing marker — leave it.
-                        if (!S.closing.has(this.#soundId)) return;
-                        S.closing.delete(this.#soundId);
-                        // If the track was paused or stopped during the fade, leave it as-is
-                        // (Foundry already handles its teardown in that case).
-                        if (!ps.playing) return;
-                        await safeUpdate(ps, { playing: false, pausedTime: null });
-                        this._teardown();
-                    });
-                    this.#playIcon && (this.#playIcon.className = "fa-solid fa-play");
-                } else {
-                    await safeUpdate(ps, { playing: false, pausedTime: null });
-                    this._teardown();
-                }
+                await safeUpdate(ps, { playing: false, pausedTime: null });
+                this._teardown();
             }, { signal });
         }
 
@@ -477,7 +554,7 @@ class EarPlayerWidget {
         stopEvent(this.#volSlider);
         this.#volSlider.addEventListener("click", e => e.stopPropagation(), { signal });
         this.#volSlider.addEventListener("mousedown", e => {
-            e.stopPropagation(); this.#volDragging = true; S.setInteractionLock(true);
+            e.stopPropagation(); this.#volDragging = true; this.#volAlt = e.altKey; S.setInteractionLock(true);
         }, { signal });
         this.#volSlider.addEventListener("touchstart", () => {
             this.#volDragging = true; S.setInteractionLock(true);
@@ -486,16 +563,16 @@ class EarPlayerWidget {
         const finishVolDrag = async () => {
             if (!this.#volDragging) return;
             this.#volDragging = false;
+            const { ps } = this.#docs();
             const v = parseFloat(this.#volSlider.value);
-            const mode = getVolumeTarget();
-            if (mode === VOLUME_TARGET.TRACK) {
-                // Foundry's debounced per-track update lands shortly after the last input.
-                try { ps.debounceVolume?.(v); } catch (_) {}
-            } else if (mode === VOLUME_TARGET.MUSIC) {
-                await game.settings.set("core", "globalPlaylistVolume", v);
+            if (this.#volAlt || !ps) {
+                await VC.setPlaylistVolume(this.#playlistId, v);
             } else {
-                await S.setPlaylistVolume(this.#playlistId, v);
+                await VC.setTrackVolume(ps, v);
             }
+            // The local volume is applied instantly; this short hold only
+            // covers Foundry's own gainNode resets around the update.
+            this.holdVolume(400);
             setTimeout(() => S.setInteractionLock(false), 30);
         };
         document.addEventListener("mouseup",   () => { if (this.#volDragging) finishVolDrag(); }, { signal: this.#docAbort.signal });
@@ -504,45 +581,24 @@ class EarPlayerWidget {
 
         this.#volSlider.addEventListener("input", e => {
             e.stopPropagation();
+            const { ps } = this.#docs();
             const v = parseFloat(this.#volSlider.value);
             this._applyVolVisual(v);
-            const mode = getVolumeTarget();
-            if (mode === VOLUME_TARGET.TRACK) {
-                // Apply to this track's gain immediately; the server update is
-                // debounced by Foundry's `PlaylistSound#debounceVolume`.
-                applyLocalVolume(ps, clampRatio(S.getPlaylistVolume(this.#playlistId) * v * getNormalizationGain(ps)));
-                try { ps.debounceVolume?.(v); } catch (_) {}
-            } else if (mode === VOLUME_TARGET.MUSIC) {
-                game.settings.set("core", "globalPlaylistVolume", v);
+            if (e.altKey || !ps) {
+                // Alt = quick playlist-level adjustment from the track row.
+                VC.setPlaylistVolumeLive(this.#playlistId, v);
             } else {
-                S.playlistVolumes[this.#playlistId] = v;
-                if (v > 0) S.savedPlaylistVolumes[this.#playlistId] = v;
-                S.applyVolumeToPlaylist(this.#playlistId);
-                for (const [sid, ctrl] of S.controls) {
-                    if (sid !== this.#soundId && ctrl.playlistId === this.#playlistId) ctrl.syncVolumeUI(v);
-                }
+                VC.setTrackVolume(ps, v);
             }
         }, { signal });
 
-        // Mute toggle
+        // Mute toggle: track by default, Alt = whole playlist.
         setTooltip(this.#volIcon, game.i18n.localize("HOTBAR.ACTIONS.Unmute"));
         this.#volIcon.addEventListener("click", async e => {
             e.stopPropagation(); e.preventDefault();
-            const mode = getVolumeTarget();
-            if (mode === VOLUME_TARGET.TRACK) {
-                const cur = clampRatio(ps.volume ?? 1);
-                const next = cur > 0 ? 0 : (S.savedTrackVolumes[this.#soundId] ?? 1);
-                if (cur > 0) S.savedTrackVolumes[this.#soundId] = cur;
-                await safeUpdate(ps, { volume: next });
-            } else if (mode === VOLUME_TARGET.MUSIC) {
-                const cur = clampRatio(game.settings.get("core", "globalPlaylistVolume") ?? 1);
-                const next = cur > 0 ? 0 : (S.savedGlobalVolume ?? 1);
-                if (cur > 0) S.savedGlobalVolume = cur;
-                await game.settings.set("core", "globalPlaylistVolume", next);
-            } else {
-                const cur = S.getPlaylistVolume(this.#playlistId);
-                await S.setPlaylistVolume(this.#playlistId, cur > 0 ? 0 : (S.savedPlaylistVolumes[this.#playlistId] || 1));
-            }
+            const { ps } = this.#docs();
+            if (e.altKey || !ps) await VC.togglePlaylistMute(this.#playlistId);
+            else await VC.toggleTrackMute(ps);
         }, { signal });
 
         // Total/remaining toggle
@@ -556,8 +612,8 @@ class EarPlayerWidget {
         const seekTrack = this.#wrapper.querySelector(".ear-seek-track");
         const hasCtrl = canControl();
         if (hasCtrl) {
-            seekTrack.addEventListener("pointerdown", e => this.#seekStart(e, ps), { signal });
-            this.#seekHandle.addEventListener("pointerdown", e => this.#seekStart(e, ps), { signal });
+            seekTrack.addEventListener("pointerdown", e => this.#seekStart(e), { signal });
+            this.#seekHandle.addEventListener("pointerdown", e => this.#seekStart(e), { signal });
             this.#seekHandle.addEventListener("click", e => { e.stopPropagation(); e.preventDefault(); }, { signal });
         } else {
             this.#seekHandle.style.display = "none";
@@ -572,6 +628,8 @@ class EarPlayerWidget {
         const nextBtn = byClass(".fa-forward-step")?.parentNode;
         if (prevBtn) prevBtn.addEventListener("click", async e => {
             e.stopPropagation(); e.preventDefault();
+            const { ps, pl } = this.#docs();
+            if (!ps) return;
             const ct = getCurrentTime(ps);
             if (ct >= 3) { await this.#seekTo(ps, 0.001); }
             else if (pl && pl.mode !== 2 && pl.mode !== -1) { await playPrevInPlaylist(pl, this.#soundId); }
@@ -579,32 +637,10 @@ class EarPlayerWidget {
         }, { signal });
         if (nextBtn) nextBtn.addEventListener("click", async e => {
             e.stopPropagation(); e.preventDefault();
+            const { ps, pl } = this.#docs();
+            if (!ps) return;
             if (!pl || pl.mode === -1 || pl.mode === 2) { await this.#seekTo(ps, 0.001); return; }
             await playNextInPlaylist(pl, this.#soundId);
-        }, { signal });
-        if (this.#repeatBtn) this.#repeatBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            const next = !ps.repeat;
-            // Optimistic feedback — corrected by the live-update loop on failure.
-            if (this.#repeatBtn) {
-                this.#repeatBtn.classList.toggle("ear-active", next);
-                this.#cachedRepeat = next;
-                setTooltip(this.#repeatBtn, game.i18n.localize(next ? "EAR.RepeatOn" : "EAR.RepeatOff"));
-            }
-            await safeUpdate(ps, { repeat: next });
-        }, { signal });
-        if (this.#modeBtn) this.#modeBtn.addEventListener("click", async e => {
-            e.stopPropagation(); e.preventDefault();
-            if (!pl) return;
-            const next = getNextMode(pl.mode);
-            // Optimistic feedback — corrected by the live-update loop on failure.
-            if (this.#modeIcon) {
-                const md = getModeData(next);
-                this.#modeIcon.className = md.icon;
-                this.#cachedMode = md.icon;
-                setTooltip(this.#modeBtn, getModeLabel(next));
-            }
-            await safeUpdate(pl, { mode: next });
         }, { signal });
     }
 
@@ -627,8 +663,10 @@ class EarPlayerWidget {
         this.#totalTime.textContent = S.showRemaining ? "-" + formatTime(dur - t) : formatTime(dur);
     }
 
-    #seekStart(e, ps) {
+    #seekStart(e) {
         e.stopPropagation(); e.preventDefault();
+        const { ps } = this.#docs();
+        if (!ps) return;
         this.#seekDragging = true;
         S.setInteractionLock(true);
         this.#seekHandle.classList.add("ear-dragging");
@@ -668,13 +706,9 @@ class EarPlayerWidget {
     }
 
     // ── Volume visual ───────────────────────────────────────────────────
-    // The value the volume slider should display, based on the selected target.
-    _getSliderValue(ps, plVolume) {
-        switch (getVolumeTarget()) {
-            case VOLUME_TARGET.TRACK:  return clampRatio(ps.volume ?? 1);
-            case VOLUME_TARGET.MUSIC:  return clampRatio(game.settings.get("core", "globalPlaylistVolume") ?? 1);
-            default:                   return plVolume;
-        }
+    // The slider always displays the track's LOCAL volume.
+    _getSliderValue(ps) {
+        return VC.getTrackVolume(ps);
     }
 
     _applyVolVisual(v) {
@@ -716,25 +750,34 @@ class EarPlayerWidget {
             // Track name
             this.updateName(getDisplayName(ps));
 
-            // Volume enforcement (defense against Foundry resetting gainNode;
-            // skip during active fades to avoid fighting the scheduled ramp).
-            if (!fadingSounds.has(this.#soundId)) {
-                // A track waiting out the silence interval is held silent every
-                // tick — far more robust than one-shot re-applies.
-                if (S.intervalWait.has(this.#soundId)) {
-                    applyLocalVolume(ps, 0.0001);
-                } else {
-                    const curPlVol = S.getPlaylistVolume(this.#playlistId);
-                    const normGain = getNormalizationGain(ps);
-                    const effective = clampRatio(curPlVol * (ps?.volume ?? 1) * normGain);
+            // Volume enforcement (defense against Foundry resetting gainNode).
+            // Skipped while the user is adjusting this track's volume or
+            // shortly after: Foundry's sync can momentarily rewrite the
+            // gainNode, and re-asserting mid-adjustment audibly jumps.
+            if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil) {
+                const curPlVol = S.getPlaylistVolume(this.#playlistId);
+                const normGain = getNormalizationGain(ps);
+                const effective = clampRatio(curPlVol * S.getTrackVolume(this.#soundId) * normGain);
+                // Write only on a real deviation: re-asserting the same
+                // value every tick is wasted work and can click. Cancel any
+                // scheduled ramp first (Foundry schedules 500ms fades to
+                // the server volume on every document update — writing
+                // `.value` during an active ramp is silently ignored).
+                try {
+                    const cur = ps.sound?.gainNode?.gain?.value;
+                    if (!(typeof cur === "number" && Math.abs(cur - effective) < 0.003)) {
+                        cancelGainRamps(ps);
+                        applyLocalVolume(ps, effective);
+                    }
+                } catch (_) {
                     applyLocalVolume(ps, effective);
+                }
 
-                    // Sync volume slider (if not being dragged) to the target's value.
-                    if (!this.#volDragging && !S.interactionLock && !S.wheelActive) {
-                        const target = this._getSliderValue(ps, curPlVol);
-                        if (Math.abs(parseFloat(this.#volSlider.value) - target) > 0.009) {
-                            this._applyVolVisual(target);
-                        }
+                // Sync volume slider (if not being dragged) to the track's own volume.
+                if (!this.#volDragging && !S.interactionLock && !S.wheelActive) {
+                    const target = this._getSliderValue(ps);
+                    if (Math.abs(parseFloat(this.#volSlider.value) - target) > 0.009) {
+                        this._applyVolVisual(target);
                     }
                 }
             }
@@ -765,15 +808,11 @@ class EarPlayerWidget {
                                 if (ctx?.state === "suspended") { ctx.resume().catch(() => {}); log.debug("Resumed AudioContext", this.#soundId); }
                                 const node = getAudioNode(ps);
                                 if (node?.context?.state === "suspended") { node.context.resume().catch(() => {}); }
-                                if (!fadingSounds.has(this.#soundId) && sound.gainNode) {
-                                    // A track waiting out the silence interval must stay silent.
-                                    if (S.intervalWait.has(this.#soundId)) {
-                                        sound.gainNode.gain.value = 0.0001;
-                                    } else {
-                                        const eff = clampRatio(S.getPlaylistVolume(this.#playlistId) * (ps?.volume ?? 1) * getNormalizationGain(ps));
-                                        if (Math.abs(sound.gainNode.gain.value - eff) > 0.01) {
-                                            sound.gainNode.gain.value = eff;
-                                        }
+                                if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil && sound.gainNode) {
+                                    const eff = clampRatio(S.getPlaylistVolume(this.#playlistId) * S.getTrackVolume(this.#soundId) * getNormalizationGain(ps));
+                                    if (Math.abs(sound.gainNode.gain.value - eff) > 0.01) {
+                                        cancelGainRamps(ps);
+                                        sound.gainNode.gain.value = eff;
                                     }
                                 }
                             }
@@ -794,25 +833,8 @@ class EarPlayerWidget {
                 this.#prevTimeVal = -1;
             }
 
-            // Mode icon
-            if (pl && this.#modeIcon) {
-                const md = getModeData(pl.mode);
-                if (this.#cachedMode !== md.icon) {
-                    this.#cachedMode = md.icon;
-                    this.#modeIcon.className = md.icon;
-                    setTooltip(this.#modeBtn, getModeLabel(pl.mode));
-                }
-            }
-
-            // Repeat state
-            const isRepeat = ps.repeat;
-            if (this.#cachedRepeat !== isRepeat) {
-                this.#cachedRepeat = isRepeat;
-                if (this.#repeatBtn) {
-                    this.#repeatBtn.classList.toggle("ear-active", isRepeat);
-                    setTooltip(this.#repeatBtn, game.i18n.localize(isRepeat ? "EAR.RepeatOn" : "EAR.RepeatOff"));
-                }
-            }
+            // Header controls (mode / repeat) live at playlist level now.
+            S.syncPlaylistHeaderControls(this.#playlistId);
 
             if (ps.pausedTime !== null || ps.playing) this.#updateTimer = setTimeout(tick, 150);
         };
@@ -829,62 +851,41 @@ function _getGlobalChannelVolume(ps) {
     return 1;
 }
 
-function _getCFadeVol(ps) {
-    const plId = ps.parent?.id;
-    const base = plId ? S.getPlaylistVolume(plId) : 1;
-    const norm = getNormalizationGain(ps);
-    return clampRatio(base * (ps.volume ?? 1) * norm);
-}
-
 async function playNextInPlaylist(pl, curId) {
-    if (!pl) return;
-    const next = getNextSoundFromOrder(pl, curId);
-    if (!next || next.id === curId) return;
-
-    const cur = pl.sounds.get(curId);
-    const xfOn  = game.settings.get(MODULE_ID, SETTING_XFADE_ENABLED);
-    const xfDur = game.settings.get(MODULE_ID, SETTING_XFADE_DURATION);
-
-    // The current track is being skipped on purpose — it must not count as a
-    // natural end, otherwise the silence interval would kick in.
-    if (cur) S._userStopped[cur.id] = true;
-
-    if (xfOn && cur?.playing && cur?.sound?.gainNode) {
-        // Crossfade: start next silently, then ramp both
-        await safeUpdate(next, { pausedTime: 0.001, playing: true });
-        const toVol = _getCFadeVol(next);
-        if (toVol < 0.0001) { await safeUpdate(cur, { playing: false, pausedTime: null }); return; }
-        setTimeout(() => {
-            if (cur.sound?.gainNode) crossfade(cur, next, _getCFadeVol(cur), toVol, xfDur);
-        }, 100);
-    } else {
-        if (cur) await safeUpdate(cur, { playing: false, pausedTime: null });
-        await safeUpdate(next, { pausedTime: 0.001, playing: true });
-    }
+    await skipToSound(pl, curId, getNextSoundFromOrder(pl, curId));
 }
 
 async function playPrevInPlaylist(pl, curId) {
+    const plFresh = game.playlists.get(pl?.id) ?? pl;
+    const prev = S.getLastPlayedSound(plFresh?.id, curId) || getPrevSoundFromOrder(plFresh, curId);
+    await skipToSound(plFresh, curId, prev);
+}
+
+// Shared skip logic for next/prev. Foundry does NOT stop sibling sounds when a
+// PlaylistSound is updated directly (only Playlist#playSound does), so the
+// skipped track is stopped here — with a hard safety net, because a silent
+// failure (stale doc) used to leave BOTH tracks playing.
+async function skipToSound(pl, curId, target) {
     if (!pl) return;
-    const prev = S.getLastPlayedSound(pl.id, curId) || getPrevSoundFromOrder(pl, curId);
-    if (!prev || prev.id === curId) return;
-
+    // Fresh documents: captured references can be stale after re-renders.
+    pl = game.playlists.get(pl.id) ?? pl;
     const cur = pl.sounds.get(curId);
-    const xfOn  = game.settings.get(MODULE_ID, SETTING_XFADE_ENABLED);
-    const xfDur = game.settings.get(MODULE_ID, SETTING_XFADE_DURATION);
+    if (!target || target.id === curId) return;
 
-    if (cur) S._userStopped[cur.id] = true;
+    if (cur) await safeUpdate(cur, { playing: false, pausedTime: null });
+    await safeUpdate(target, { pausedTime: 0.001, playing: true });
 
-    if (xfOn && cur?.playing && cur?.sound?.gainNode) {
-        await safeUpdate(prev, { pausedTime: 0.001, playing: true });
-        const toVol = _getCFadeVol(prev);
-        if (toVol < 0.0001) { await safeUpdate(cur, { playing: false, pausedTime: null }); return; }
-        setTimeout(() => {
-            if (cur.sound?.gainNode) crossfade(cur, prev, _getCFadeVol(cur), toVol, xfDur);
-        }, 100);
-    } else {
-        if (cur) await safeUpdate(cur, { playing: false, pausedTime: null });
-        await safeUpdate(prev, { pausedTime: 0.001, playing: true });
-    }
+    // Hard safety: shortly after the switch, the skipped track must not still be
+    // playing alongside the target. Re-fetches fresh docs before acting.
+    setTimeout(() => {
+        if (pl.mode === 2) return; // simultaneous mode: coexistence is legal
+        const plNow = game.playlists.get(pl.id);
+        const curNow = plNow?.sounds.get(curId);
+        const targetNow = plNow?.sounds.get(target.id);
+        if (curNow?.playing && targetNow?.playing) {
+            safeUpdate(curNow, { playing: false, pausedTime: null });
+        }
+    }, 800);
 }
 
 // ── handleDirectory ─────────────────────────────────────────────────────────
@@ -904,12 +905,6 @@ async function handleDirectory(directory) {
     for (const s of sounds) {
         activeIds.add(s.element.dataset.soundId);
         if (s.ps.playing) S.trackPlaying(s.element.dataset.playlistId, s.element.dataset.soundId);
-    }
-
-    // Drop closing markers for tracks that already left the directory (stopped
-    // or deleted while their fade-out was still in progress).
-    for (const sid of S.closing) {
-        if (!activeIds.has(sid)) S.closing.delete(sid);
     }
 
     // Lazy destroy: schedule removal, but cancel if sound reappears within 500ms
@@ -947,15 +942,7 @@ async function handleDirectory(directory) {
     // Pass 1 — hide Foundry's native controls for every non-streaming sound
     // immediately (synchronously), so its UI never flashes while a track is
     // loading or switching. Streaming tracks keep their native controls.
-    // Tracks that are fading out after a close keep their whole row hidden —
-    // a directory re-render would otherwise rebuild it visible and the row
-    // would flicker back into view until its fade completes.
     for (const s of sounds) {
-        const sid = s.element.dataset.soundId;
-        if (S.closing.has(sid)) {
-            s.element.style.display = "none";
-            continue;
-        }
         if (!s.ps.streaming) hideNativeControls(s.element);
     }
 
@@ -965,7 +952,7 @@ async function handleDirectory(directory) {
     // concurrent handleDirectory runs (render hook + debounced refresh) cannot
     // interleave here, so only one widget is ever created per track.
     for (const s of sounds) {
-        if (s.ps.streaming || S.closing.has(s.element.dataset.soundId)) continue;
+        if (s.ps.streaming) continue;
         const soundId = s.element.dataset.soundId;
         const ps = s.ps;
         const plId = s.element.dataset.playlistId;
@@ -973,26 +960,328 @@ async function handleDirectory(directory) {
 
         const existing = S.controls.get(soundId);
         if (existing) {
+            existing.wrapper.classList.add("ear-grouped");
             if (!s.element.contains(existing.wrapper)) existing.mount(s.element);
             existing.updateName(getDisplayName(ps));
             continue;
         }
 
         const widget = new EarPlayerWidget(soundId, plId, ps, pl, getDuration(ps, 0));
+        widget.wrapper.classList.add("ear-grouped");
         S.controls.set(soundId, widget);
         s.element.appendChild(widget.wrapper);
     }
 
+    // Pass 2b — group headers: one bar per playlist, inserted before its first
+    // playing track. The header owns the PLAYLIST volume stage.
+    syncGroupHeaders(sounds);
+
     // Pass 3 — ensure every sound is loaded (idempotent; Foundry also loads
     // playing sounds on its own).
     for (const s of sounds) {
-        if (s.ps.streaming || S.closing.has(s.element.dataset.soundId)) continue;
+        if (s.ps.streaming) continue;
         const ps = s.ps;
         if (!ps.sound || !ps.sound.loaded) {
             try { await ps.load(); } catch (e) { log.error("Load:", e.message); }
         }
     }
     setTimeout(injectPreviewControls, 16);
+}
+
+// ── Playlist group headers ──────────────────────────────────────────────────
+// Insert (or move) one header bar per active playlist before its first track,
+// and drop headers whose playlist no longer has playing tracks. Idempotent:
+// safe to run on every directory render.
+function syncGroupHeaders(sounds) {
+    const seen = new Set();
+    const lastOfGroup = new Map(); // plId → soundId of the group's last track
+    for (const s of sounds) {
+        const plId = s.element.dataset.playlistId;
+        if (!plId) continue;
+        lastOfGroup.set(plId, s.element.dataset.soundId);
+        if (seen.has(plId)) continue;
+        seen.add(plId);
+
+        let hdr = S.plHeaders.get(plId);
+        if (!hdr || !hdr.root.isConnected) {
+            if (hdr) { hdr.ac?.abort(); hdr.root.remove(); }
+            hdr = buildPlaylistHeader(plId);
+            if (!hdr) continue;
+            S.plHeaders.set(plId, hdr);
+        }
+        // insertBefore moves an already-connected node — keeps the header glued
+        // to the first track of the playlist even after Foundry re-renders.
+        s.element.parentNode.insertBefore(hdr.root, s.element);
+        S.syncPlaylistHeader(plId, S.getPlaylistVolume(plId));
+        S.syncPlaylistHeaderControls(plId);
+    }
+    // Mark the last track of each group so CSS can close its bottom corners
+    // and end the guide line (":last-child" is unusable — .sound siblings mix
+    // playlists in the DOM).
+    for (const [plId, sid] of lastOfGroup) {
+        for (const [ctrlId, w] of S.controls) {
+            w.wrapper.classList.toggle("ear-group-end", ctrlId === sid && w.playlistId === plId);
+        }
+    }
+    // Collapse state — animated. hdr.appliedCollapse tracks the applied state:
+    // the first sync applies instantly (fresh render), a state change runs the
+    // height/opacity animation.
+    for (const [plId, hdr] of S.plHeaders) {
+        if (!seen.has(plId)) { hdr.ac?.abort(); hdr.root.remove(); S.plHeaders.delete(plId); continue; }
+        const collapsed = S.collapsedPls.has(plId);
+        hdr.root.classList.toggle("ear-collapsed", collapsed);
+        if (hdr.collapseIcon) {
+            hdr.collapseIcon.className = collapsed ? "fa-solid fa-chevron-down" : "fa-solid fa-chevron-up";
+            setTooltip(hdr.collapseBtn, loc(collapsed ? "EAR.Expand" : "EAR.Collapse"));
+        }
+        const rows = sounds.filter(s => s.element.dataset.playlistId === plId);
+        if (hdr.appliedCollapse === undefined) {
+            for (const s of rows) s.element.style.display = collapsed ? "none" : "";
+            hdr.appliedCollapse = collapsed;
+        } else if (hdr.appliedCollapse !== collapsed) {
+            hdr.appliedCollapse = collapsed;
+            animateGroupCollapse(plId, hdr, rows, collapsed);
+        }
+        syncRailHeight(plId, hdr);
+    }
+}
+
+// Exact rail height: from the header top to the bottom of the group's last
+// track. Collapsed groups wrap just the header.
+function syncRailHeight(plId, hdr) {
+    if (S.collapsedPls.has(plId) || !hdr.root.isConnected) {
+        hdr.root.style.setProperty("--ear-group-h", hdr.root.offsetHeight + "px");
+        return;
+    }
+    let lastEl = null;
+    for (const [, w] of S.controls) {
+        if (w.playlistId === plId && w.wrapper.classList.contains("ear-group-end")) {
+            lastEl = w.wrapper.closest(".sound");
+            break;
+        }
+    }
+    if (!lastEl) return;
+    const h = lastEl.getBoundingClientRect().bottom - hdr.root.getBoundingClientRect().top;
+    if (h > 0) hdr.root.style.setProperty("--ear-group-h", h + "px");
+}
+
+// Smooth collapse/expand: rows animate height+opacity, then collapse to
+// display:none (expand: the reverse). The rail follows via its own CSS
+// height transition and is re-measured exactly at the end.
+function animateGroupCollapse(plId, hdr, rows, collapse) {
+    const DUR = 250;
+    if (!rows.length) { syncRailHeight(plId, hdr); return; }
+
+    if (!collapse) {
+        // Rail target upfront: header + full row content heights.
+        const targetH = hdr.root.offsetHeight + rows.reduce((a, s) => a + (s.element.scrollHeight || 0), 0);
+        hdr.root.style.setProperty("--ear-group-h", targetH + "px");
+    }
+
+    if (collapse) {
+        for (const s of rows) {
+            const el = s.element;
+            el.style.overflow = "hidden";
+            el.style.height = el.offsetHeight + "px";
+            el.style.opacity = "1";
+        }
+        void document.body.offsetHeight; // commit start values
+        for (const s of rows) {
+            const el = s.element;
+            el.classList.add("ear-animating");
+            el.style.height = "0px";
+            el.style.opacity = "0";
+        }
+    } else {
+        for (const s of rows) {
+            const el = s.element;
+            el.style.display = "";
+            el.classList.add("ear-animating");
+            el.style.overflow = "hidden";
+            el.style.height = "0px";
+            el.style.opacity = "0";
+        }
+        void document.body.offsetHeight; // commit start values
+        for (const s of rows) {
+            const el = s.element;
+            el.style.height = el.scrollHeight + "px";
+            el.style.opacity = "1";
+        }
+    }
+
+    setTimeout(() => {
+        for (const s of rows) {
+            const el = s.element;
+            if (collapse) el.style.display = "none";
+            el.classList.remove("ear-animating");
+            el.style.overflow = "";
+            el.style.height = "";
+            el.style.opacity = "";
+        }
+        syncRailHeight(plId, hdr);
+    }, DUR + 30);
+}
+
+function buildPlaylistHeader(plId) {
+    const pl = game.playlists.get(plId);
+    if (!pl) return null;
+
+    const root = document.createElement("div");
+    root.classList.add("ear-pl-header");
+    root.dataset.playlistId = plId;
+
+    // Collapse toggle — hides every track of the group.
+    const collapseBtn = document.createElement("button");
+    collapseBtn.classList.add("ear-transport-btn", "ear-collapse-btn");
+    const collapseIcon = document.createElement("i");
+    collapseIcon.className = "fa-solid fa-chevron-up";
+    collapseBtn.appendChild(collapseIcon);
+    setTooltip(collapseBtn, loc("EAR.Collapse"));
+    stopEvent(collapseBtn);
+    collapseBtn.addEventListener("click", e => {
+        e.stopPropagation(); e.preventDefault();
+        if (S.collapsedPls.has(plId)) S.collapsedPls.delete(plId);
+        else S.collapsedPls.add(plId);
+        S.refreshDirectory();
+    });
+    root.appendChild(collapseBtn);
+
+    const name = document.createElement("div");
+    name.classList.add("ear-pl-name");
+    name.textContent = pl.name;
+    setTooltip(name, pl.name);
+    root.appendChild(name);
+
+    // Volume block pinned to the right edge, mirroring the track rows.
+    const volC = document.createElement("div");
+    volC.classList.add("ear-volume-container");
+    const icon = document.createElement("i");
+    const slider = document.createElement("input");
+    const text = document.createElement("span");
+
+    volC.appendChild(icon);
+    volC.appendChild(slider);
+    volC.appendChild(text);
+    root.appendChild(volC);
+
+    icon.className = getVolumeIcon(S.getPlaylistVolume(plId)) + " ear-volume-icon";
+    slider.type = "range"; slider.min = 0; slider.max = 1; slider.step = 0.005;
+    slider.value = S.getPlaylistVolume(plId);
+    slider.classList.add("ear-volume-slider");
+    updateVolumeSliderFill(slider, parseFloat(slider.value));
+    text.classList.add("ear-vol-text");
+    text.textContent = Math.round(parseFloat(slider.value) * 100) + "%";
+    setTooltip(slider, loc("EAR.PlaylistVolume"));
+    stopEvent(slider);
+
+    let dragging = false;
+    let altDrag = false;
+
+    slider.addEventListener("mousedown", e => {
+        e.stopPropagation();
+        dragging = true;
+        altDrag = e.altKey;
+        const hdr = S.plHeaders.get(plId);
+        if (hdr) hdr.dragging = true;
+        S.setInteractionLock(true);
+    });
+    slider.addEventListener("touchstart", () => {
+        dragging = true;
+        const hdr = S.plHeaders.get(plId);
+        if (hdr) hdr.dragging = true;
+        S.setInteractionLock(true);
+    }, { passive: true });
+
+    // AbortController so the document-level drag listeners die with the header.
+    const ac = new AbortController();
+
+    const finish = async () => {
+        if (!dragging) return;
+        dragging = false;
+        const hdr = S.plHeaders.get(plId);
+        if (hdr) hdr.dragging = false;
+        const v = parseFloat(slider.value);
+        // Alt on a header slider targets the global music channel instead.
+        if (altDrag) await game.settings.set("core", "globalPlaylistVolume", v);
+        else await VC.setPlaylistVolume(plId, v);
+        altDrag = false;
+        setTimeout(() => S.setInteractionLock(false), 30);
+    };
+    document.addEventListener("mouseup", finish, { signal: ac.signal });
+    document.addEventListener("touchend", finish, { signal: ac.signal });
+    document.addEventListener("touchcancel", finish, { signal: ac.signal });
+
+    slider.addEventListener("input", e => {
+        e.stopPropagation();
+        const v = parseFloat(slider.value);
+        updateVolumeSliderFill(slider, v);
+        icon.className = getVolumeIcon(v) + " ear-volume-icon";
+        text.textContent = Math.round(v * 100) + "%";
+        if (altDrag || e.altKey) { altDrag = true; game.settings.set("core", "globalPlaylistVolume", v); }
+        else VC.setPlaylistVolumeLive(plId, v);
+    });
+
+    icon.addEventListener("click", async e => {
+        e.stopPropagation(); e.preventDefault();
+        if (e.altKey) {
+            const cur = clampRatio(game.settings.get("core", "globalPlaylistVolume") ?? 1);
+            S.savedGlobalVolume ??= cur;
+            await game.settings.set("core", "globalPlaylistVolume", cur > 0 ? 0 : (S.savedGlobalVolume || 1));
+            if (cur > 0) S.savedGlobalVolume = cur;
+        } else {
+            await VC.togglePlaylistMute(plId);
+        }
+    });
+
+    // ── Playlist-level transport: Repeat / Mode ───────────────────────
+    let repeatBtn = null, modeBtn = null, modeIcon = null;
+    if (canControl()) {
+        const cg = document.createElement("div");
+        cg.classList.add("ear-controls-group");
+
+        repeatBtn = document.createElement("button");
+        repeatBtn.classList.add("ear-transport-btn");
+        repeatBtn.innerHTML = `<i class="fa-solid fa-repeat"></i>`;
+        setTooltip(repeatBtn, game.i18n.localize("EAR.RepeatOff"));
+        stopEvent(repeatBtn);
+        repeatBtn.addEventListener("click", async e => {
+            e.stopPropagation(); e.preventDefault();
+            // Playing sounds if any, otherwise the whole playlist — the button
+            // must work while nothing is playing too.
+            const playing = pl.sounds.filter(s => s.playing);
+            const pool = playing.length ? playing : pl.sounds;
+            // Optimistic feedback — corrected by syncPlaylistHeaderControls.
+            const next = !pool.some(s => s.repeat);
+            repeatBtn.classList.toggle("ear-active", next);
+            hdrCache.cachedRepeat = next;
+            setTooltip(repeatBtn, game.i18n.localize(next ? "EAR.RepeatOn" : "EAR.RepeatOff"));
+            await Promise.all(pool.map(s => safeUpdate(s, { repeat: next })));
+        });
+
+        modeBtn = document.createElement("button");
+        modeBtn.classList.add("ear-transport-btn");
+        modeIcon = document.createElement("i");
+        modeIcon.className = getModeData(pl.mode).icon;
+        modeBtn.appendChild(modeIcon);
+        setTooltip(modeBtn, getModeLabel(pl.mode));
+        stopEvent(modeBtn);
+        modeBtn.addEventListener("click", async e => {
+            e.stopPropagation(); e.preventDefault();
+            const next = getNextMode(pl.mode);
+            // Optimistic feedback — corrected by syncPlaylistHeaderControls.
+            modeIcon.className = getModeData(next).icon;
+            hdrCache.cachedMode = getModeData(next).icon;
+            setTooltip(modeBtn, getModeLabel(next));
+            await safeUpdate(pl, { mode: next });
+        });
+
+        cg.appendChild(repeatBtn);
+        cg.appendChild(modeBtn);
+        root.appendChild(cg);
+    }
+
+    const hdrCache = { cachedRepeat: undefined, cachedMode: undefined };
+    return { root, icon, slider, text, collapseBtn, collapseIcon, repeatBtn, modeBtn, modeIcon, ac, dragging: false, ...hdrCache };
 }
 
 function hideNativeControls(el) {
@@ -1017,30 +1306,6 @@ PlaylistDir.prototype.render = function (...args) {
 
 // ── Foundry hooks ───────────────────────────────────────────────────────────
 Hooks.once("init", () => {
-    // ── User-facing settings (config: true) ───────────────────────────────
-    game.settings.register(MODULE_ID, VOLUME_TARGET_SETTING, {
-        name: "EAR.VolumeTarget", hint: "EAR.VolumeTargetHint",
-        scope: "client", config: true, type: String, default: VOLUME_TARGET.PLAYLIST,
-        choices: {
-            [VOLUME_TARGET.TRACK]:    "EAR.VolumeTargetTrack",
-            [VOLUME_TARGET.PLAYLIST]: "EAR.VolumeTargetPlaylist",
-            [VOLUME_TARGET.MUSIC]:    "EAR.VolumeTargetMusic",
-        },
-        onChange: () => invalidateVolumeTarget(),
-    });
-    game.settings.register(MODULE_ID, SETTING_FADE_ENABLED, {
-        name: "EAR.FadeEnabled", hint: "EAR.FadeEnabledHint",
-        scope: "client", config: true, type: Boolean, default: true,
-    });
-    game.settings.register(MODULE_ID, SETTING_XFADE_ENABLED, {
-        name: "EAR.CrossfadeEnabled", hint: "EAR.CrossfadeEnabledHint",
-        scope: "client", config: true, type: Boolean, default: true,
-    });
-    game.settings.register(MODULE_ID, SETTING_TRACK_INTERVAL, {
-        name: "EAR.TrackInterval", hint: "EAR.TrackIntervalHint",
-        scope: "client", config: true, type: Number, default: 0, range: { min: 0, max: 30, step: 0.5 },
-    });
-
     // ── Internal settings (config: false, no UI) ──────────────────────────
     game.settings.register(MODULE_ID, SETTING_PLAYLIST_VOLUMES, {
         scope: "client",
@@ -1054,19 +1319,23 @@ Hooks.once("init", () => {
                 S.playlistVolumes[plId] = nv;
                 if (nv > 0) S.savedPlaylistVolumes[plId] = nv;
                 S.applyVolumeToPlaylist(plId);
-            }
-            for (const [, w] of S.controls) {
-                const vol = S.getPlaylistVolume(w.playlistId);
-                w.syncVolumeUI(vol);
+                S.syncPlaylistHeader(plId, nv);
             }
         },
     });
-    // Hidden but still stored — preserves values tuned by existing users.
-    game.settings.register(MODULE_ID, SETTING_FADE_DURATION, {
-        scope: "client", config: false, type: Number, default: 0.8,
-    });
-    game.settings.register(MODULE_ID, SETTING_XFADE_DURATION, {
-        scope: "client", config: false, type: Number, default: 2.0,
+    // Per-user track mixing — client scope, never touches the shared document.
+    game.settings.register(MODULE_ID, SETTING_TRACK_VOLUMES, {
+        scope: "client",
+        config: false,
+        type: Object,
+        default: {},
+        onChange: all => {
+            if (typeof all !== "object" || all === null) return;
+            for (const [sId, v] of Object.entries(all)) {
+                S.trackVolumes[sId] = clampRatio(Number(v) || 0);
+            }
+            S.applyAllVolumes();
+        },
     });
     game.settings.register(MODULE_ID, NORM_SETTING, {
         scope: "client", config: false, type: Object, default: {},
@@ -1076,20 +1345,8 @@ Hooks.once("init", () => {
 
 Hooks.once("ready", () => {
     S.loadVolumesFromSettings();
+    S.loadTrackVolumesFromSettings();
     if (game.user.isGM) ensurePreviewObserver();
-});
-
-// When the slider targets all music, keep every widget's slider in sync with the
-// global playlist volume (also fires for Foundry's own volume control changes).
-// Debounced: slider drags fire this hook on every input event.
-let _globalVolumeSyncTimer = null;
-Hooks.on("globalPlaylistVolumeChanged", () => {
-    if (getVolumeTarget() !== VOLUME_TARGET.MUSIC) return;
-    clearTimeout(_globalVolumeSyncTimer);
-    _globalVolumeSyncTimer = setTimeout(() => {
-        _globalVolumeSyncTimer = null;
-        for (const [, w] of S.controls) w.syncGlobalVolumeUI();
-    }, 50);
 });
 
 // `renderPlaylistDirectory` fires for every PlaylistDirectory render; the generic
@@ -1108,87 +1365,60 @@ Hooks.on("updatePlaylistSound", (sound, changes) => {
 
     const plId = sound.parent?.id;
 
-    // Natural end detection (not triggered by user close)
+    // Foundry's own sync rewrites the gainNode to channel × track volume,
+    // silently dropping the EAR playlist stage. This happens on EVERY document
+    // update (repeat toggle, pausedTime syncs, …) and was audible as a volume
+    // dip. Foundry applies its audio sync AFTER this hook runs, so a single
+    // synchronous re-assert is not enough — re-assert now and at short
+    // deferred checkpoints until Foundry settles. Starting tracks are excluded:
+    // their dedicated branch below owns the initial volume.
+    if (plId && changes.playing !== true) {
+        // Recompute the target at each checkpoint: the user may move the local
+        // volume slider between timers. Foundry's sync() answers EVERY update
+        // of a playing sound with `sound.fade(volume, {duration: 500})` — a
+        // scheduled Web Audio ramp to the server-side volume. Writing `.value`
+        // alone cannot beat an active ramp, so each checkpoint cancels the
+        // scheduled automation first.
+        const reassert = () => {
+            cancelGainRamps(sound);
+            const t = clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sound.id) * getNormalizationGain(sound));
+            applyLocalVolume(sound, t);
+        };
+        reassert();
+        setTimeout(reassert, 0);
+        setTimeout(reassert, 50);
+        setTimeout(reassert, 250);
+    }
+
+    // Natural end detection
     const stopped = changes.playing === false && (changes.pausedTime === undefined || changes.pausedTime === null);
     if (stopped) {
         stopPreview(sound.id);
-        S.closing.delete(sound.id);
-        S.intervalWait.delete(sound.id);
-        const userStopped = !!S._userStopped[sound.id];
-        delete S._userStopped[sound.id];
 
-        if (!fadingSounds.has(sound.id)) {
-            const w = S.controls.get(sound.id);
-            if (w) {
-                if (S._pendingDelete.has(sound.id)) {
-                    clearTimeout(S._pendingDelete.get(sound.id));
-                    S._pendingDelete.delete(sound.id);
-                }
-                w.destroy();
-                S.controls.delete(sound.id);
+        const w = S.controls.get(sound.id);
+        if (w) {
+            if (S._pendingDelete.has(sound.id)) {
+                clearTimeout(S._pendingDelete.get(sound.id));
+                S._pendingDelete.delete(sound.id);
             }
-        }
-
-        // Mark as natural end for interval tracking (only if auto-advancing playlist)
-        if (plId && !userStopped) {
-            const pl = game.playlists.get(plId);
-            if (pl && (pl.mode === 0 || pl.mode === 1)) S.trackEnded[plId] = true;
+            w.destroy();
+            S.controls.delete(sound.id);
         }
     }
 
-    if (changes.playing === true || changes.volume !== undefined) {
-        if (plId) {
-            const vol = S.getPlaylistVolume(plId);
-            S.playlistVolumes[plId] = vol;
-
-            const fadeOn  = game.settings.get(MODULE_ID, SETTING_FADE_ENABLED);
-            const fadeDur = game.settings.get(MODULE_ID, SETTING_FADE_DURATION);
-            const interval = game.settings.get(MODULE_ID, SETTING_TRACK_INTERVAL);
-            const normGain = getNormalizationGain(sound);
-            const target = clampRatio(vol * (sound.volume ?? 1) * normGain);
-
-            // Track interval: if the previous track ended naturally, hold the new
-            // one silent for `interval` seconds before fading it in.
-            // The decision is deferred by a macrotask because the natural-end
-            // hook for the previous track may fire AFTER this one within the same
-            // socket response (hook order follows the track order in the playlist,
-            // so it is reversed in shuffle mode or when wrapping to the first track).
-            if (changes.playing === true && !fadingSounds.has(sound.id)) {
-                setTimeout(() => {
-                    if (fadingSounds.has(sound.id)) return;
-                    const pending = !!S.trackEnded[plId];
-                    if (pending) S.trackEnded[plId] = false;
-
-                    if (pending && interval > 0) {
-                        // Start silent; the live-update loop keeps re-applying the
-                        // silence until the interval elapses, then fade in.
-                        applyLocalVolume(sound, 0.0001);
-                        S.intervalWait.add(sound.id);
-                        setTimeout(() => {
-                            S.intervalWait.delete(sound.id);
-                            if (!sound.playing) return; // stopped during the pause
-                            if (fadeOn) {
-                                fadeGain(sound, target, fadeDur);
-                            } else {
-                                applyLocalVolume(sound, target);
-                            }
-                        }, interval * 1000);
-                    } else if (fadeOn) {
-                        applyLocalVolume(sound, 0.0001);
-                        fadeGain(sound, target, fadeDur);
-                    } else {
-                        applyLocalVolume(sound, target);
-                    }
-                }, 0);
-            } else if (changes.volume !== undefined) {
-                const applyVol = () => {
-                    if (S.intervalWait.has(sound.id)) applyLocalVolume(sound, 0.0001);
-                    else applyLocalVolume(sound, target);
-                };
-                setTimeout(applyVol, 50);
-                setTimeout(applyVol, 400);
-            }
-        }
+    // A starting track must come up at EAR's effective volume right away:
+    // Foundry's own sync only knows channel × document volume. As above,
+    // short deferred checkpoints outlast Foundry's post-hook sync + ramp.
+    if (changes.playing === true && plId) {
+        const assert = () => {
+            cancelGainRamps(sound);
+            const t = clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sound.id) * getNormalizationGain(sound));
+            applyLocalVolume(sound, t);
+        };
+        assert();
+        setTimeout(assert, 0);
+        setTimeout(assert, 50);
+        setTimeout(assert, 250);
     }
     S.refreshDirectory();
 });
@@ -1224,7 +1454,7 @@ function injectPreviewControls() {
                 stopPreview(sId);
                 btn.classList.remove("ear-active");
             } else {
-                previewSound(ps, clampRatio(S.getPlaylistVolume(plId) * (ps.volume ?? 1) * getNormalizationGain(ps) * _getGlobalChannelVolume(ps)));
+                previewSound(ps, clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sId) * getNormalizationGain(ps) * _getGlobalChannelVolume(ps)));
                 btn.classList.add("ear-active");
             }
         });
@@ -1279,7 +1509,7 @@ Hooks.on("preUpdatePlaylistSound", (doc, changes) => {
     if (changes.pausedTime === 0) changes.pausedTime = 0.001;
 });
 
-// ── Global wheel handler ────────────────────────────────────────────────────
+// ── Global wheel handler (track rows) ───────────────────────────────────────
 document.addEventListener("wheel", e => {
     const earEl = e.target.closest(DOM.player);
     if (!earEl) return;
@@ -1304,31 +1534,21 @@ document.addEventListener("wheel", e => {
     if (text) text.textContent = Math.round(nv * 100) + "%";
 
     const ps = game.playlists.get(plId)?.sounds.get(soundId);
-    const mode = getVolumeTarget();
-    if (mode === VOLUME_TARGET.TRACK) {
-        if (ps) applyLocalVolume(ps, clampRatio(S.getPlaylistVolume(plId) * nv * getNormalizationGain(ps)));
-    } else if (mode === VOLUME_TARGET.MUSIC) {
-        game.settings.set("core", "globalPlaylistVolume", nv);
-    } else {
-        S.playlistVolumes[plId] = nv;
-        if (nv > 0) S.savedPlaylistVolumes[plId] = nv;
-        S.applyVolumeToPlaylist(plId);
-        for (const [sid, ctrl] of S.controls) {
-            if (sid !== soundId && ctrl.playlistId === plId) ctrl.syncVolumeUI(nv);
-        }
+    // Default: this track only. Alt: whole playlist.
+    if (e.altKey) {
+        VC.setPlaylistVolumeLive(plId, nv);
+    } else if (ps) {
+        VC.setTrackVolume(ps, nv);
     }
 
     clearTimeout(S.wheelThrottle);
     S.wheelThrottle = setTimeout(async () => {
         S.wheelThrottle = null;
         const final = parseFloat(slider.value);
-        if (mode === VOLUME_TARGET.TRACK) {
-            try { ps?.debounceVolume?.(final); } catch (_) {}
-        } else if (mode === VOLUME_TARGET.MUSIC) {
-            await game.settings.set("core", "globalPlaylistVolume", final);
-        } else {
-            await S.setPlaylistVolume(plId, final);
-        }
+        if (!ps) return;
+        if (e.altKey) await VC.setPlaylistVolume(plId, final);
+        else await VC.setTrackVolume(ps, final);
+        S.controls.get(soundId)?.holdVolume(400);
         setTimeout(() => { S.wheelActive = false; }, 50);
     }, 250);
 }, { passive: false, capture: true });

@@ -124,8 +124,22 @@ en/ru обновлены: человечнее, короче; подсказки
 
 ## Session 12: Цель слайдера громкости
 
+> **Устарело (Session 15):** настройка `volumeTarget` удалена. См. Session 15.
+
 `volumeTarget` (select): только трек (`ps.volume`, через `debounceVolume`) / весь плейлист (как раньше) / вся музыка (`core.globalPlaylistVolume`, синк через хук `globalPlaylistVolumeChanged`).
 Заодно: `_buildDOM` применяет полную эффективную громкость (`playlist × track × norm`).
+
+---
+
+## Session 15: Разделение громкости плейлиста и трека (issue: per-track volume)
+
+Модель: `effective = core global × playlist (EAR) × track (ps.volume) × normalization`. Каждая ступень хранится и регулируется независимо.
+
+- **VolumeController** (`VC`) — единственный владелец семантики громкости: `setTrackVolume(Live)`, `setPlaylistVolume(Live)`, `toggleTrackMute`, `togglePlaylistMute`. Убрана мультиплексация одного слайдера между целями.
+- **Слайдер в строке трека** теперь всегда показывает и меняет только `ps.volume`.
+- **Заголовки групп**: `syncGroupHeaders` вставляет перед первым играющим треком каждого плейлиста бар `.ear-pl-header` (имя + слайдер + мьют), управляющий ступенью playlist; рефы в `S.plHeaders`, пересоздание при потере `isConnected`.
+- Alt = быстрое управление соседней ступенью (Alt на треке → плейлист, Alt на заголовке → вся музыка).
+- Настройка `volumeTarget`, хук `globalPlaylistVolumeChanged`, методы `syncVolumeUI/syncGlobalVolumeUI` удалены.
 
 ---
 
@@ -157,3 +171,8 @@ en/ru обновлены: человечнее, короче; подсказки
 | Баг | Причина | Фикс |
 |---|---|---|
 | Строки «багаются и мерцают» при закрытии двух треков | Завершение fade первого трека → ре-рендер Foundry → строка второго (ещё затухающего) пересоздавалась видимой (inline `display:none` терялся) | `S.closing` (Set): pass 1 `handleDirectory` прячет строку заново на каждом запуске; маркер чистится в fade-cb, stop-ветке хука и по выходу из `.currently-playing` |
+
+## Session 16: Локальная громкость трека
+
+ps.volume — серверное поле документа, пишется всем клиентам. Слайдер трека теперь пишет ТОЛЬКО локальный слой: S.trackVolumes (клиентская настройка trackVolumes, дебаунс 400 мс). Эффективная громкость = global × playlist (EAR) × track (локальный) × norm. Все ps.volume/sound.volume в music-player заменены на S.getTrackVolume(id); debounceVolume и ветка changes.volume в updatePlaylistSound удалены. radio-engine не тронут (там серверная громкость осознанна).
+

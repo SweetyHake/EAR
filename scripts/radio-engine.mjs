@@ -1,7 +1,10 @@
 import {
-    MODULE_ID, SETTING_NOISE_VOLUME, log, clampRatio, getRadioFlags, isRadio
+    MODULE_ID, log, clampRatio, getRadioFlags, isRadio
 } from "./radio-common.mjs";
 
+// Loudness of the static burst played when the radio switches tracks
+// (relative to Foundry's interface volume).
+const NOISE_VOLUME = 0.2;
 const NOISE_SRC = `modules/${MODULE_ID}/radio-static.generated`;
 const NOISE_BUFFER_COUNT = 6;
 const handledSounds = new WeakMap();
@@ -179,9 +182,8 @@ async function playSwitchNoise(placeable, radio) {
     try {
         const noise = await createNoiseBuffer();
         if (!noise) return;
-        const configuredVolume = clampRatio(game.settings.get(MODULE_ID, SETTING_NOISE_VOLUME) ?? 0.2);
         const interfaceVolume = clampRatio(game.settings.get("core", "globalInterfaceVolume") ?? 1);
-        const volume = configuredVolume * interfaceVolume * (0.24 + Math.random() * 0.1);
+        const volume = NOISE_VOLUME * interfaceVolume * (0.24 + Math.random() * 0.1);
         const sound = await canvas.sounds.playAtPosition(noise.src,
             { x: doc.x, y: doc.y, elevation: doc.elevation }, doc.radius,
             { walls: doc.walls, easing: doc.easing, playbackOptions: {

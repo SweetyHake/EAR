@@ -1,7 +1,7 @@
 {
   "id": "ear",
   "title": "Enhanced Audio Resources",
-  "version": "14.3.0",
+  "version": "14.4.0",
   "compatibility": {
     "minimum": "13",
     "verified": "14",
@@ -17,7 +17,7 @@
   ],
   "url": "https://github.com/SweetyHake/EAR",
   "manifest": "https://raw.githubusercontent.com/SweetyHake/EAR/refs/heads/main/module.json",
-  "download": "https://github.com/SweetyHake/EAR/releases/download/14.3.0/module.zip",
+  "download": "https://github.com/SweetyHake/EAR/releases/download/14.4.0/module.zip",
   "esmodules": [
     "scripts/common.mjs",
     "scripts/music-player.mjs",
