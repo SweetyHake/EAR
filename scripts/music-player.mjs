@@ -3,7 +3,7 @@ import {
     getAudioNode, getCurrentTime, getDuration, applyLocalVolume, getVolumeIcon,
     updateVolumeSliderFill, getPlaybackOrder, getNextSoundFromOrder, getPrevSoundFromOrder,
     safeUpdate, getDisplayName,
-    cancelGainRamps,
+    cancelGainRamps, getCoreFadeDuration, isCoreFadeActive, applyLocalVolumeRamped,
     previewSound, stopPreview, isPreviewing, stopAllPreviews,
     getNormalizationGain,
     analyzePlaylist, setNormalizationGains, clearNormalization, invalidateNormGains, NORM_SETTING,
@@ -37,6 +37,7 @@ class EarState {
     playHistory          = [];          // [{playlistId, soundId}]
     showRemaining        = false;
     _pendingDelete       = new Map();   // soundId → setTimeout id (lazy destroy)
+    fadeHolds            = new Map();   // soundId → expiry ms while EAR owns a fade-in ramp
     plHeaders            = new Map();   // playlistId → group header refs {root, icon, slider, text}
     collapsedPls         = new Set();   // playlistIds collapsed in the player (session-scoped)
 
@@ -129,6 +130,8 @@ class EarState {
         if (!pl) return;
         for (const ps of pl.sounds) {
             if (!ps.playing && !ps.sound) continue;
+            // Don't stomp on Foundry's end-of-track fade-out ramp (#4)
+            if (isCoreFadeActive(ps)) continue;
             const gain = getNormalizationGain(ps);
             // Cancel any scheduled ramp (e.g. Foundry's 500ms fade to server
             // volume) so the playlist slider takes effect immediately.
@@ -385,9 +388,12 @@ class EarPlayerWidget {
         this.#state.playlistVolumes[this.#playlistId] = plVolume;
         const initSlider = this._getSliderValue(ps);
         // Apply the full effective volume (playlist × track × normalization),
-        // regardless of what the slider controls.
-        const eff = clampRatio(plVolume * S.getTrackVolume(this.#soundId) * getNormalizationGain(ps));
-        applyLocalVolume(ps, eff);
+        // regardless of what the slider controls — unless Foundry's end-of-track
+        // fade-out is running, which must be left alone (#4).
+        if (!isCoreFadeActive(ps)) {
+            const eff = clampRatio(plVolume * S.getTrackVolume(this.#soundId) * getNormalizationGain(ps));
+            applyLocalVolume(ps, eff);
+        }
 
         // Root + data attrs
         const player = document.createElement("div");
@@ -754,7 +760,11 @@ class EarPlayerWidget {
             // Skipped while the user is adjusting this track's volume or
             // shortly after: Foundry's sync can momentarily rewrite the
             // gainNode, and re-asserting mid-adjustment audibly jumps.
-            if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil) {
+            // Skipped during Foundry's end-of-track fade-out: killing that
+            // ramp made tracks end without their fade (#4). Also held while
+            // EAR's own fade-in ramp is still running.
+            if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil
+                && !isCoreFadeActive(ps) && Date.now() >= (S.fadeHolds.get(this.#soundId) || 0)) {
                 const curPlVol = S.getPlaylistVolume(this.#playlistId);
                 const normGain = getNormalizationGain(ps);
                 const effective = clampRatio(curPlVol * S.getTrackVolume(this.#soundId) * normGain);
@@ -808,7 +818,8 @@ class EarPlayerWidget {
                                 if (ctx?.state === "suspended") { ctx.resume().catch(() => {}); log.debug("Resumed AudioContext", this.#soundId); }
                                 const node = getAudioNode(ps);
                                 if (node?.context?.state === "suspended") { node.context.resume().catch(() => {}); }
-                                if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil && sound.gainNode) {
+                                if (!this.#volDragging && !S.wheelActive && Date.now() >= this.#volHoldUntil && sound.gainNode
+                                    && !isCoreFadeActive(ps) && Date.now() >= (S.fadeHolds.get(this.#soundId) || 0)) {
                                     const eff = clampRatio(S.getPlaylistVolume(this.#playlistId) * S.getTrackVolume(this.#soundId) * getNormalizationGain(ps));
                                     if (Math.abs(sound.gainNode.gain.value - eff) > 0.01) {
                                         cancelGainRamps(ps);
@@ -1378,8 +1389,11 @@ Hooks.on("updatePlaylistSound", (sound, changes) => {
         // of a playing sound with `sound.fade(volume, {duration: 500})` — a
         // scheduled Web Audio ramp to the server-side volume. Writing `.value`
         // alone cannot beat an active ramp, so each checkpoint cancels the
-        // scheduled automation first.
+        // scheduled automation first. Checkpoints are skipped inside the
+        // end-of-track fade window: killing that ramp made tracks end
+        // without their fade (#4).
         const reassert = () => {
+            if (isCoreFadeActive(sound)) return;
             cancelGainRamps(sound);
             const t = clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sound.id) * getNormalizationGain(sound));
             applyLocalVolume(sound, t);
@@ -1394,6 +1408,7 @@ Hooks.on("updatePlaylistSound", (sound, changes) => {
     const stopped = changes.playing === false && (changes.pausedTime === undefined || changes.pausedTime === null);
     if (stopped) {
         stopPreview(sound.id);
+        S.fadeHolds.delete(sound.id);
 
         const w = S.controls.get(sound.id);
         if (w) {
@@ -1409,16 +1424,31 @@ Hooks.on("updatePlaylistSound", (sound, changes) => {
     // A starting track must come up at EAR's effective volume right away:
     // Foundry's own sync only knows channel × document volume. As above,
     // short deferred checkpoints outlast Foundry's post-hook sync + ramp.
+    // With a configured fade, EAR owns the ramp instead so the fade-in plays
+    // to EAR's target volume instead of being cut off by a value write (#4).
     if (changes.playing === true && plId) {
-        const assert = () => {
+        const fd = getCoreFadeDuration(sound);
+        const target = () =>
+            clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sound.id) * getNormalizationGain(sound));
+        if (fd > 0 && !sound.repeat) {
             cancelGainRamps(sound);
-            const t = clampRatio(S.getPlaylistVolume(plId) * S.getTrackVolume(sound.id) * getNormalizationGain(sound));
-            applyLocalVolume(sound, t);
-        };
-        assert();
-        setTimeout(assert, 0);
-        setTimeout(assert, 50);
-        setTimeout(assert, 250);
+            applyLocalVolumeRamped(sound, target(), fd);
+            S.fadeHolds.set(sound.id, Date.now() + fd + 300);
+            const reassert = () => {
+                cancelGainRamps(sound);
+                applyLocalVolumeRamped(sound, target(), fd);
+            };
+            setTimeout(reassert, 250);
+        } else {
+            const assert = () => {
+                cancelGainRamps(sound);
+                applyLocalVolume(sound, target());
+            };
+            assert();
+            setTimeout(assert, 0);
+            setTimeout(assert, 50);
+            setTimeout(assert, 250);
+        }
     }
     S.refreshDirectory();
 });

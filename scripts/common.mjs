@@ -152,6 +152,59 @@ export function applyLocalVolume(ps, vol) {
     }
 }
 
+/**
+ * Mirror of Foundry v14's PlaylistSound.fadeDuration: the configured per-sound
+ * or playlist fade, capped at half the track duration, in ms. 0 when disabled.
+ */
+export function getCoreFadeDuration(ps) {
+    try {
+        const fade = ps.fade ?? ps.parent?.fade ?? 0;
+        if (!(fade > 0)) return 0;
+        const dur = ps.sound?.duration;
+        if (!Number.isFinite(dur)) return fade;
+        const half = Math.ceil(dur / 2) * 1000;
+        return Math.min(Math.max(fade, 0), half);
+    } catch (_) { return 0; }
+}
+
+/**
+ * True while Foundry's scheduled end-of-track fade-out may be running a gain ramp
+ * on this sound (non-repeating track inside its fade window). Volume enforcement
+ * must not cancel that ramp, or the track ends without its fade (#4).
+ */
+export function isCoreFadeActive(ps) {
+    try {
+        if (ps.repeat) return false;
+        const fd = getCoreFadeDuration(ps);
+        if (!(fd > 0)) return false;
+        const dur = ps.sound?.duration;
+        if (!Number.isFinite(dur)) return false;
+        return getCurrentTime(ps) >= dur - fd / 1000;
+    } catch (_) { return false; }
+}
+
+/**
+ * Like applyLocalVolume but as a linear ramp over the given ms, so EAR can own a
+ * fade-in without cancelling the core's ramp with a hard value write.
+ */
+export function applyLocalVolumeRamped(ps, vol, ms) {
+    try {
+        const sound = ps.sound;
+        const ctx = sound?.context || sound?._context;
+        if (!sound?.gainNode?.gain || !ctx || !ms) {
+            applyLocalVolume(ps, vol);
+            return;
+        }
+        const g = sound.gainNode.gain;
+        const now = ctx.currentTime;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(g.value, now);
+        g.linearRampToValueAtTime(clampRatio(vol), now + ms / 1000);
+    } catch (_) {
+        applyLocalVolume(ps, vol);
+    }
+}
+
 export function getVolumeIcon(v) {
     if (v <= 0) return "fa-solid fa-volume-xmark";
     if (v < 0.33) return "fa-solid fa-volume-off";
